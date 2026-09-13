@@ -77,3 +77,7 @@ func (s *Service) CreateJournal(ctx context.Context, content string) (*CreateJou
 		Memories:  memories,
 	}, nil
 }
+
+func (s *Service) ListJournals(ctx context.Context, limit int) ([]model.JournalWithInsight, error) {
+	return s.repo.ListJournals(ctx, limit)
+}

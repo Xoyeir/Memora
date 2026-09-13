@@ -12,6 +12,7 @@ func Setup(h *handler.JournalHandler) *gin.Engine {
 	api := r.Group("/api")
 	{
 		api.POST("/journals", h.Create)
+		api.GET("/journals", h.List)
 	}
 
 	return r

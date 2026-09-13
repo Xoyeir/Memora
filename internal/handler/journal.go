@@ -39,3 +39,13 @@ func (h *JournalHandler) Create(c *gin.Context) {
 
 	c.JSON(http.StatusOK, result)
 }
+
+func (h *JournalHandler) List(c *gin.Context) {
+	list, err := h.svc.ListJournals(c.Request.Context(), 50)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, list)
+}
