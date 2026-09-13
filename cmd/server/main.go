@@ -27,7 +27,8 @@ func main() {
 	svc := service.NewService(repo, llmClient)
 
 	journalHandler := handler.NewJournalHandler(svc)
-	r := router.Setup(journalHandler)
+	chatHandler := handler.NewChatHandler(svc)
+	r := router.Setup(journalHandler, chatHandler)
 
 	if err := r.Run(":" + cfg.ServerPort); err != nil {
 		log.Fatalf("启动服务失败: %v", err)

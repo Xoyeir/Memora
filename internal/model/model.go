@@ -24,15 +24,14 @@ type JournalInsight struct {
 }
 
 type Memory struct {
-	ID              int64     `json:"id"`
-	SourceJournalID int64     `json:"source_journal_id"`
-	Content         string    `json:"content"`
-	Category        string    `json:"category,omitempty"`
-	Status          string    `json:"status"`
-	SupersededByID  *int64    `json:"superseded_by_id,omitempty"`
-	IsPinned        bool      `json:"is_pinned"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID             int64     `json:"id"`
+	Content        string    `json:"content"`
+	Category       string    `json:"category,omitempty"`
+	Status         string    `json:"status"`
+	SupersededByID *int64    `json:"superseded_by_id,omitempty"`
+	IsPinned       bool      `json:"is_pinned"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type JournalWithInsight struct {

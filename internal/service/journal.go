@@ -53,22 +53,17 @@ func (s *Service) CreateJournal(ctx context.Context, content string) (*CreateJou
 		Gratitude:    extraction.Gratitude,
 	}
 
-	if err := s.repo.CompleteInsight(ctx, journalID, insight); err != nil {
-		return nil, fmt.Errorf("保存分析结果失败: %w", err)
-	}
-
 	memories := make([]model.Memory, 0, len(extraction.Memories))
 	for _, mc := range extraction.Memories {
-		m := model.Memory{
-			SourceJournalID: journalID,
-			Content:         mc.Content,
-			Category:        mc.Category,
-			Status:          "active",
-		}
-		if err := s.repo.CreateMemory(ctx, m); err != nil {
-			return nil, fmt.Errorf("保存记忆失败: %w", err)
-		}
-		memories = append(memories, m)
+		memories = append(memories, model.Memory{
+			Content:  mc.Content,
+			Category: mc.Category,
+			Status:   "active",
+		})
+	}
+
+	if err := s.repo.SaveAnalysisResult(ctx, journalID, insight, memories); err != nil {
+		return nil, fmt.Errorf("保存分析结果失败: %w", err)
 	}
 
 	return &CreateJournalResult{

@@ -110,3 +110,11 @@ func (c *Client) chat(ctx context.Context, messages []chatMessage, wantJSON bool
 
 	return chatResp.Choices[0].Message.Content, nil
 }
+
+func (c *Client) Chat(ctx context.Context, system, user string) (string, error) {
+	messages := []chatMessage{
+		{Role: "system", Content: system},
+		{Role: "user", Content: user},
+	}
+	return c.chat(ctx, messages, false)
+}

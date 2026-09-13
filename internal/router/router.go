@@ -6,13 +6,14 @@ import (
 	"github.com/Xoyeir/memora/internal/handler"
 )
 
-func Setup(h *handler.JournalHandler) *gin.Engine {
+func Setup(jh *handler.JournalHandler, ch *handler.ChatHandler) *gin.Engine {
 	r := gin.Default()
 
 	api := r.Group("/api")
 	{
-		api.POST("/journals", h.Create)
-		api.GET("/journals", h.List)
+		api.POST("/journals", jh.Create)
+		api.GET("/journals", jh.List)
+		api.POST("/chat", ch.Chat)
 	}
 
 	return r
