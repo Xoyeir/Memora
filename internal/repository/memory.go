@@ -32,3 +32,32 @@ func (r *Repository) ListMemories(ctx context.Context, limit int) ([]model.Memor
 
 	return list, rows.Err()
 }
+
+func (r *Repository) CreateMemoryFromChat(ctx context.Context, content, category string, chatMessageID int64) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx,
+		"INSERT INTO memories (content, category, status) VALUES (?, ?, 'active')",
+		content, category)
+	if err != nil {
+		return err
+	}
+
+	memoryID, err := res.LastInsertId()
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx,
+		"INSERT INTO memory_sources (memory_id, chat_message_id) VALUES (?, ?)",
+		memoryID, chatMessageID)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
