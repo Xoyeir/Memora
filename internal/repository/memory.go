@@ -61,3 +61,50 @@ func (r *Repository) CreateMemoryFromChat(ctx context.Context, content, category
 
 	return tx.Commit()
 }
+
+func (r *Repository) AddMemoryChatSource(ctx context.Context, memoryID, chatMessageID int64) error {
+	_, err := r.db.ExecContext(ctx,
+		"INSERT INTO memory_sources (memory_id, chat_message_id) VALUES (?, ?)",
+		memoryID, chatMessageID)
+	return err
+}
+
+func (r *Repository) ReplaceMemory(ctx context.Context, oldMemoryID int64, newStatus, content, category string, chatMessageID int64) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx,
+		"INSERT INTO memories (content, category, status) VALUES (?, ?, 'active')",
+		content, category)
+	if err != nil {
+		return err
+	}
+
+	newID, err := res.LastInsertId()
+	if err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE memories SET status = ?, superseded_by_id = ? WHERE id = ?",
+		newStatus, newID, oldMemoryID); err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO memory_sources (memory_id, chat_message_id) VALUES (?, ?)",
+		newID, chatMessageID); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (r *Repository) SetMemoryStatus(ctx context.Context, memoryID int64, status string) error {
+	_, err := r.db.ExecContext(ctx,
+		"UPDATE memories SET status = ? WHERE id = ?", status, memoryID)
+	return err
+}
