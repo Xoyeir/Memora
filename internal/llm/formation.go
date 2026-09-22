@@ -59,7 +59,7 @@ type ObserveItem struct {
 	EvidenceRefs []string `json:"evidence_refs"`
 }
 
-const formationSystemPrompt = `你是 Memora 的记忆形成模块。你会收到用户的当前消息和已有长期记忆，每条都带编号（当前消息写作 "chat:编号 | 内容"，长期记忆写作 "memory:编号 | 内容"）。你的任务是产生一个结构化"理解"，用于帮助生成回复，并判断是否需要更新长期记忆。
+const formationSystemPrompt = `你是 Memora 的记忆形成模块。你会收到最近对话（带 role 标记）、当前消息和已有长期记忆：消息写作 "chat:编号 [role] | 内容"，长期记忆写作 "memory:编号 | 内容"。你的任务是产生一个结构化"理解"，用于帮助生成回复，并判断是否需要更新长期记忆。assistant 消息只用于理解上下文，不能作为记忆的证据。
 
 严格只输出一个 JSON 对象，不要有任何解释、前言或代码块标记。格式如下：
 {

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"strings"
 
 	"github.com/Xoyeir/memora/internal/model"
 )
@@ -13,6 +14,46 @@ func (r *Repository) ListMemories(ctx context.Context, limit int) ([]model.Memor
 		WHERE status = 'active'
 		ORDER BY id DESC
 		LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []model.Memory
+	for rows.Next() {
+		var m model.Memory
+		if err := rows.Scan(
+			&m.ID, &m.Content, &m.Category, &m.Status,
+			&m.CreatedAt, &m.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		list = append(list, m)
+	}
+
+	return list, rows.Err()
+}
+
+func (r *Repository) SearchMemories(ctx context.Context, query string, limit int) ([]model.Memory, error) {
+	words := strings.Fields(query)
+	where := "status = 'active'"
+	args := make([]any, 0, len(words)+1)
+	if len(words) > 0 {
+		clauses := make([]string, len(words))
+		for i, w := range words {
+			clauses[i] = "content LIKE ?"
+			args = append(args, "%"+w+"%")
+		}
+		where += " AND (" + strings.Join(clauses, " OR ") + ")"
+	}
+	args = append(args, limit)
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, content, COALESCE(category, ''), status, created_at, updated_at
+		FROM memories
+		WHERE `+where+`
+		ORDER BY id DESC
+		LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -107,4 +148,31 @@ func (r *Repository) SetMemoryStatus(ctx context.Context, memoryID int64, status
 	_, err := r.db.ExecContext(ctx,
 		"UPDATE memories SET status = ? WHERE id = ?", status, memoryID)
 	return err
+}
+
+func (r *Repository) ListMemorySources(ctx context.Context, memoryID int64) ([]model.MemorySource, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT 'chat', cm.content, cm.created_at
+		FROM memory_sources ms
+		JOIN chat_messages cm ON cm.id = ms.chat_message_id
+		WHERE ms.memory_id = ?
+		UNION ALL
+		SELECT 'journal', j.content, j.created_at
+		FROM memory_sources ms
+		JOIN journals j ON j.id = ms.journal_id
+		WHERE ms.memory_id = ?`, memoryID, memoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []model.MemorySource
+	for rows.Next() {
+		var m model.MemorySource
+		if err := rows.Scan(&m.SourceType, &m.Content, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, m)
+	}
+	return list, rows.Err()
 }

@@ -14,6 +14,7 @@ func Setup(jh *handler.JournalHandler, ch *handler.ChatHandler) *gin.Engine {
 		api.POST("/journals", jh.Create)
 		api.GET("/journals", jh.List)
 		api.POST("/chat", ch.Chat)
+		api.POST("/chat/stream", ch.ChatStream)
 	}
 
 	return r

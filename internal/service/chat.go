@@ -12,35 +12,89 @@ import (
 )
 
 func (s *Service) Chat(ctx context.Context, userMessage string) (string, error) {
+	systemPrompt, historyMsgs, err := s.prepareChat(ctx, userMessage)
+	if err != nil {
+		return "", err
+	}
+
+	messages := buildAgentMessages(systemPrompt, historyMsgs, userMessage)
+	messages, final := s.runAgent(ctx, messages)
+
+	if final == "" {
+		content, _, err := s.llm.ChatWithTools(ctx, messages, nil)
+		if err != nil {
+			return "", err
+		}
+		final = content
+	}
+
+	if _, err := s.repo.CreateChatMessage(ctx, "assistant", final); err != nil {
+		return "", fmt.Errorf("保存助手回复失败: %w", err)
+	}
+
+	return final, nil
+}
+
+func (s *Service) ChatStream(ctx context.Context, userMessage string, onDelta func(string)) error {
+	systemPrompt, historyMsgs, err := s.prepareChat(ctx, userMessage)
+	if err != nil {
+		return err
+	}
+
+	messages := buildAgentMessages(systemPrompt, historyMsgs, userMessage)
+	messages, _ = s.runAgent(ctx, messages)
+
+	reply, err := s.llm.StreamMessages(ctx, messages, onDelta)
+	if err != nil {
+		return err
+	}
+
+	if _, err := s.repo.CreateChatMessage(ctx, "assistant", reply); err != nil {
+		return fmt.Errorf("保存助手回复失败: %w", err)
+	}
+
+	return nil
+}
+
+func buildAgentMessages(systemPrompt string, historyMsgs []llm.Message, userMessage string) []llm.Message {
+	messages := make([]llm.Message, 0, len(historyMsgs)+2)
+	messages = append(messages, llm.Message{Role: "system", Content: systemPrompt})
+	messages = append(messages, historyMsgs...)
+	messages = append(messages, llm.Message{Role: "user", Content: userMessage})
+	return messages
+}
+
+func (s *Service) prepareChat(ctx context.Context, userMessage string) (string, []llm.Message, error) {
 	userChatID, err := s.repo.CreateChatMessage(ctx, "user", userMessage)
 	if err != nil {
-		return "", fmt.Errorf("保存用户消息失败: %w", err)
+		return "", nil, fmt.Errorf("保存用户消息失败: %w", err)
+	}
+
+	history, err := s.repo.ListRecentChatMessages(ctx, userChatID, 20)
+	if err != nil {
+		return "", nil, fmt.Errorf("读取历史失败: %w", err)
 	}
 
 	memories, err := s.repo.ListMemories(ctx, 20)
 	if err != nil {
-		return "", fmt.Errorf("读取记忆失败: %w", err)
+		return "", nil, fmt.Errorf("读取记忆失败: %w", err)
 	}
 
-	formation, err := s.llm.Formation(ctx, buildFormationInput(userChatID, userMessage, memories))
+	formation, err := s.llm.Formation(ctx, buildFormationInput(userChatID, userMessage, history, memories))
 	if err != nil {
 		log.Printf("Formation 失败（不影响回复）: %v", err)
 	} else {
 		s.persistFormation(ctx, formation, userChatID, memories)
 	}
 
-	systemPrompt := buildResponseSystemPrompt(formation, memories)
+	systemPrompt := buildResponseSystemPrompt(formation)
 
-	reply, err := s.llm.Chat(ctx, systemPrompt, userMessage)
-	if err != nil {
-		return "", err
+	historyMsgs := make([]llm.Message, len(history))
+	for i, m := range history {
+		historyMsgs[i] = llm.Message{Role: m.Role, Content: m.Content}
 	}
 
-	if _, err := s.repo.CreateChatMessage(ctx, "assistant", reply); err != nil {
-		return "", fmt.Errorf("保存助手回复失败: %w", err)
-	}
-
-	return reply, nil
+	return systemPrompt, historyMsgs, nil
 }
 
 func (s *Service) persistFormation(ctx context.Context, formation *llm.FormationResult, userChatID int64, memories []model.Memory) {
@@ -110,9 +164,20 @@ func (s *Service) persistFormation(ctx context.Context, formation *llm.Formation
 	}
 }
 
-func buildFormationInput(chatMessageID int64, userMessage string, memories []model.Memory) string {
+func buildFormationInput(chatMessageID int64, userMessage string, history []model.ChatMessage, memories []model.Memory) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "当前消息：\nchat:%d | %s\n\n已有长期记忆：\n", chatMessageID, userMessage)
+	sb.WriteString("最近对话：\n")
+	if len(history) == 0 {
+		sb.WriteString("（无）\n")
+	} else {
+		for _, m := range history {
+			fmt.Fprintf(&sb, "chat:%d [%s] | %s\n", m.ID, m.Role, m.Content)
+		}
+	}
+
+	fmt.Fprintf(&sb, "\n当前消息：\nchat:%d [user] | %s\n", chatMessageID, userMessage)
+
+	sb.WriteString("\n已有长期记忆：\n")
 	if len(memories) == 0 {
 		sb.WriteString("（无）\n")
 		return sb.String()
@@ -146,6 +211,8 @@ func parseRef(ref, prefix string) (int64, bool) {
 
 const responseSystemPrompt = `你是 Memora，一个长期陪伴和记录用户的个人 AI。
 
+你可以调用工具读取用户的长期记忆（recall_memories）和记忆的原始来源（get_memory_source）。回复需要引用用户过去的信息时，先调用 recall_memories。
+
 你的目标是自然地回应用户，而不是急着分析他或解决他的问题。
 
 * 用户主要在分享、倾诉、表达情绪或想法时：先听懂并回应，不要自动给建议、做任务拆解或心理分析。
@@ -162,20 +229,9 @@ const responseSystemPrompt = `你是 Memora，一个长期陪伴和记录用户�
 用户真的来求解时，再认真帮他解决。
 `
 
-func buildResponseSystemPrompt(formation *llm.FormationResult, memories []model.Memory) string {
+func buildResponseSystemPrompt(formation *llm.FormationResult) string {
 	var sb strings.Builder
 	sb.WriteString(responseSystemPrompt)
-
-	if len(memories) > 0 {
-		sb.WriteString("\n\n关于用户，你已知以下长期记忆：\n")
-		for _, m := range memories {
-			if m.Category != "" {
-				fmt.Fprintf(&sb, "- %s（%s）\n", m.Content, m.Category)
-			} else {
-				fmt.Fprintf(&sb, "- %s\n", m.Content)
-			}
-		}
-	}
 
 	if formation != nil {
 		sb.WriteString("\n本轮你对用户当前消息的理解：\n")

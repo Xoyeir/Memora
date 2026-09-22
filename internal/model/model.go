@@ -38,3 +38,16 @@ type JournalWithInsight struct {
 	Journal Journal        `json:"journal"`
 	Insight JournalInsight `json:"insight"`
 }
+
+type ChatMessage struct {
+	ID        int64     `json:"id"`
+	Role      string    `json:"role"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type MemorySource struct {
+	SourceType string    `json:"source_type"`
+	Content    string    `json:"content"`
+	CreatedAt  time.Time `json:"created_at"`
+}

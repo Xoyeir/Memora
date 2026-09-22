@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -38,4 +40,31 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"reply": reply})
+}
+
+func (h *ChatHandler) ChatStream(c *gin.Context) {
+	var req chatRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体格式错误"})
+		return
+	}
+	if req.Message == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "message 不能为空"})
+		return
+	}
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+
+	err := h.svc.ChatStream(c.Request.Context(), req.Message, func(delta string) {
+		data, _ := json.Marshal(map[string]string{"content": delta})
+		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+		c.Writer.Flush()
+	})
+	if err != nil {
+		data, _ := json.Marshal(map[string]string{"error": err.Error()})
+		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+		c.Writer.Flush()
+	}
 }
