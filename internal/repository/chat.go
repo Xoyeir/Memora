@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/Xoyeir/memora/internal/model"
+	"github.com/Xoyeir/Memora/internal/model"
 )
 
 // ErrFormationLeaseLost 表示本次执行已经不再持有这轮的 Formation。

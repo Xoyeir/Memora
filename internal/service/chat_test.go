@@ -9,10 +9,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Xoyeir/memora/internal/llm"
-	"github.com/Xoyeir/memora/internal/model"
-	"github.com/Xoyeir/memora/internal/repository"
-	"github.com/Xoyeir/memora/internal/testsupport"
+	"github.com/Xoyeir/Memora/internal/llm"
+	"github.com/Xoyeir/Memora/internal/model"
+	"github.com/Xoyeir/Memora/internal/repository"
+	"github.com/Xoyeir/Memora/internal/testsupport"
 )
 
 // agentReply 是假模型在某一步的返回。

@@ -3,8 +3,8 @@ package service
 import (
 	"testing"
 
-	"github.com/Xoyeir/memora/internal/llm"
-	"github.com/Xoyeir/memora/internal/model"
+	"github.com/Xoyeir/Memora/internal/llm"
+	"github.com/Xoyeir/Memora/internal/model"
 )
 
 func candidate(content string) *llm.MemoryCandidate {

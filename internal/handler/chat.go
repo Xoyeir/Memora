@@ -9,8 +9,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/Xoyeir/memora/internal/model"
-	"github.com/Xoyeir/memora/internal/service"
+	"github.com/Xoyeir/Memora/internal/model"
+	"github.com/Xoyeir/Memora/internal/service"
 )
 
 type ChatHandler struct {

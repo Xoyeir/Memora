@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 
-	"github.com/Xoyeir/memora/internal/llm"
+	"github.com/Xoyeir/Memora/internal/llm"
 )
 
 // LLMClient 是 service 层用到的模型能力。

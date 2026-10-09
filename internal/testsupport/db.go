@@ -23,7 +23,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
-	"github.com/Xoyeir/memora/internal/repository"
+	"github.com/Xoyeir/Memora/internal/repository"
 )
 
 // EnvDSN 是测试库的连接串。未设置时所有依赖数据库的测试都会被跳过。

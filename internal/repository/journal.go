@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/Xoyeir/memora/internal/model"
+	"github.com/Xoyeir/Memora/internal/model"
 )
 
 func (r *Repository) CreateJournal(ctx context.Context, content string) (int64, error) {

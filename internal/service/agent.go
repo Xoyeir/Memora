@@ -7,8 +7,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/Xoyeir/memora/internal/llm"
-	"github.com/Xoyeir/memora/internal/model"
+	"github.com/Xoyeir/Memora/internal/llm"
+	"github.com/Xoyeir/Memora/internal/model"
 )
 
 const maxAgentSteps = 3

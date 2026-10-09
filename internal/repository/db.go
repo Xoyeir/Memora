@@ -12,7 +12,7 @@ import (
 	// 内嵌 IANA 时区数据库，避免在缺少 tzdata 的运行环境里 LoadLocation 失败。
 	_ "time/tzdata"
 
-	"github.com/Xoyeir/memora/internal/config"
+	"github.com/Xoyeir/Memora/internal/config"
 )
 
 // StorageTimezone 是数据库里 datetime 的时区，也就是这批墙上时间的解释方式。

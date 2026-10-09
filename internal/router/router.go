@@ -3,7 +3,7 @@ package router
 import (
 	"github.com/gin-gonic/gin"
 
-	"github.com/Xoyeir/memora/internal/handler"
+	"github.com/Xoyeir/Memora/internal/handler"
 )
 
 func Setup(jh *handler.JournalHandler, ch *handler.ChatHandler) *gin.Engine {

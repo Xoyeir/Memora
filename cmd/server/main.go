@@ -3,12 +3,12 @@ package main
 import (
 	"log"
 
-	"github.com/Xoyeir/memora/internal/config"
-	"github.com/Xoyeir/memora/internal/handler"
-	"github.com/Xoyeir/memora/internal/llm"
-	"github.com/Xoyeir/memora/internal/repository"
-	"github.com/Xoyeir/memora/internal/router"
-	"github.com/Xoyeir/memora/internal/service"
+	"github.com/Xoyeir/Memora/internal/config"
+	"github.com/Xoyeir/Memora/internal/handler"
+	"github.com/Xoyeir/Memora/internal/llm"
+	"github.com/Xoyeir/Memora/internal/repository"
+	"github.com/Xoyeir/Memora/internal/router"
+	"github.com/Xoyeir/Memora/internal/service"
 )
 
 func main() {

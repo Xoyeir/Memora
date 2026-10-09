@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Xoyeir/memora/internal/repository"
+	"github.com/Xoyeir/Memora/internal/repository"
 )
 
 func TestNewClockRejectsInvalidTimezone(t *testing.T) {

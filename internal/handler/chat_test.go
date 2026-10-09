@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Xoyeir/memora/internal/service"
+	"github.com/Xoyeir/Memora/internal/service"
 )
 
 func TestCheckChatRequest(t *testing.T) {

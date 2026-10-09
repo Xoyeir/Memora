@@ -1,4 +1,4 @@
-module github.com/Xoyeir/memora
+module github.com/Xoyeir/Memora
 
 go 1.27.0
 

@@ -10,7 +10,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
-	"github.com/Xoyeir/memora/internal/config"
+	"github.com/Xoyeir/Memora/internal/config"
 )
 
 func testConfig(tz string) *config.Config {

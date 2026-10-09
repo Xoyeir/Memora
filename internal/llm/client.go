@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Xoyeir/memora/internal/config"
+	"github.com/Xoyeir/Memora/internal/config"
 )
 
 const requestTimeout = 30 * time.Second

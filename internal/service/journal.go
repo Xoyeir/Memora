@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Xoyeir/memora/internal/model"
-	"github.com/Xoyeir/memora/internal/repository"
+	"github.com/Xoyeir/Memora/internal/model"
+	"github.com/Xoyeir/Memora/internal/repository"
 )
 
 type Service struct {

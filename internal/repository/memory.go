@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Xoyeir/memora/internal/model"
+	"github.com/Xoyeir/Memora/internal/model"
 )
 
 func (r *Repository) ListMemories(ctx context.Context, limit int) ([]model.Memory, error) {
