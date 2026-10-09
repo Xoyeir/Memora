@@ -1,10 +1,24 @@
 # Memora
 
+<div align="center">
+
+![Go](https://img.shields.io/badge/Go-1.27-00ADD8?style=flat-square&logo=go&logoColor=white)
+![Gin](https://img.shields.io/badge/Gin-v1.12.0-008ECF?style=flat-square&logo=gin&logoColor=white)
+![MySQL](https://img.shields.io/badge/MySQL-8-4479A1?style=flat-square&logo=mysql&logoColor=white)
+![Vue](https://img.shields.io/badge/Vue-3-4FC08D?style=flat-square&logo=vuedotjs&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?style=flat-square&logo=typescript&logoColor=white)
+![Vite](https://img.shields.io/badge/Vite-6-646CFF?style=flat-square&logo=vite&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-3DA639?style=flat-square)
+
+</div>
+
 Memora 是一个**以长期记忆支撑陪伴与分析的个人 Agent**。它从持续对话中提取用户事实、偏好与目标，支持记忆更新、按需召回与来源追溯，让每次交流都能建立在已有的了解之上。
 
-![Memora 聊天界面](docs/screenshot.png)
+<p align="center">
+  <img src="docs/screenshot.png" alt="Memora 聊天界面">
+</p>
 
-## 已实现功能
+## ✨ 已实现功能
 
 - **自然对话**：回复以 SSE 流式返回，助手回复渲染为 markdown，用户消息始终是纯文本，模型给出的图片与嵌入内容不会被加载。
 - **长期记忆**：每轮回复前 Formation 会读最近对话与已有记忆，产出一次结构化理解，并给出形成、确认、替换、纠正四种记忆操作，每条记忆都连着它的原始出处。
@@ -14,7 +28,7 @@ Memora 是一个**以长期记忆支撑陪伴与分析的个人 Agent**。它从
 
 规划中、尚未实现：记忆管理、状态日历与检索改进。
 
-## 技术栈与核心流程
+## 🧠 技术栈与核心流程
 
 后端 Go 1.27 + Gin + MySQL，前端 Vue 3 + TypeScript + Vite，模型走 OpenAI 兼容的 `/chat/completions`（默认 DeepSeek）。一条消息进来之后的顺序：
 
@@ -35,7 +49,7 @@ flowchart TD
 
 **流式回复**是用户实际看到的那次生成。流式接口里决策那轮即使写了正文也会被丢掉，只有流式这次的内容落库；客户端断开时取消一路传下去，`[DONE]` 用来区分正常结束与对端提前断流。
 
-## 本地运行
+## 🚀 本地运行
 
 依赖 Go 1.27（以 `go.mod` 为准）、Node `^18.0.0 || ^20.0.0 || >=22.0.0`（由锁定的 Vite 6.4.3 决定）、MySQL 8，以及一个 OpenAI 兼容的 API Key。
 
@@ -76,7 +90,7 @@ go run ./cmd/server
 cd web && npm install && npm run dev
 ```
 
-## 验证与已知限制
+## ✅ 验证与已知限制
 
 ```bash
 go build ./... && go vet ./...
@@ -103,6 +117,6 @@ go test -count=1 -p 1 ./...
 - 召回是关键词匹配，没有向量检索，换个说法问同一件事可能召回不到，待更新。
 - 日记只有接口，没有界面。
 
-## License
+## 📄 License
 
 [MIT](LICENSE)
