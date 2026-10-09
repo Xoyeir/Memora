@@ -13,8 +13,10 @@ func Setup(jh *handler.JournalHandler, ch *handler.ChatHandler) *gin.Engine {
 	{
 		api.POST("/journals", jh.Create)
 		api.GET("/journals", jh.List)
+		api.GET("/chat/messages", ch.History)
 		api.POST("/chat", ch.Chat)
 		api.POST("/chat/stream", ch.ChatStream)
+		api.POST("/chat/formation/recover", ch.RecoverFormation)
 	}
 
 	return r

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Xoyeir/memora/internal/llm"
+	"github.com/Xoyeir/memora/internal/model"
 )
 
 const maxAgentSteps = 3
@@ -44,10 +45,17 @@ var agentTools = []llm.Tool{
 	},
 }
 
-func (s *Service) runAgent(ctx context.Context, messages []llm.Message) ([]llm.Message, string) {
+func (s *Service) runAgent(ctx context.Context, messages []llm.Message) ([]llm.Message, string, []model.Memory) {
 	var final string
-	recalled := make(map[int64]bool)
+	var recalled []model.Memory
+	seen := make(map[int64]bool)
+
 	for step := 0; step < maxAgentSteps; step++ {
+		// 已被取消/超时就不再发起模型请求，也不做任何业务重试。
+		if ctx.Err() != nil {
+			break
+		}
+
 		content, calls, err := s.llm.ChatWithTools(ctx, messages, agentTools)
 		if err != nil {
 			log.Printf("Agent 决策失败（step %d）: %v", step, err)
@@ -61,16 +69,22 @@ func (s *Service) runAgent(ctx context.Context, messages []llm.Message) ([]llm.M
 		messages = append(messages, llm.Message{Role: "assistant", ToolCalls: calls})
 		for _, call := range calls {
 			start := time.Now()
-			result := s.executeTool(ctx, call, recalled)
+			result, found := s.executeTool(ctx, call, seen)
+			for _, m := range found {
+				if !seen[m.ID] {
+					seen[m.ID] = true
+					recalled = append(recalled, m)
+				}
+			}
 			log.Printf("trace step=%d tool=%s args=%s elapsed=%s result=%s",
 				step, call.Name, call.Arguments, time.Since(start), truncate(result, 200))
 			messages = append(messages, llm.Message{Role: "tool", ToolCallID: call.ID, Content: result})
 		}
 	}
-	return messages, final
+	return messages, final, recalled
 }
 
-func (s *Service) executeTool(ctx context.Context, call llm.ToolCall, recalled map[int64]bool) string {
+func (s *Service) executeTool(ctx context.Context, call llm.ToolCall, seen map[int64]bool) (string, []model.Memory) {
 	switch call.Name {
 	case "recall_memories":
 		var args struct {
@@ -78,41 +92,38 @@ func (s *Service) executeTool(ctx context.Context, call llm.ToolCall, recalled m
 			Limit int    `json:"limit"`
 		}
 		if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
-			return toolError(fmt.Errorf("参数解析失败: %w", err))
+			return toolError(fmt.Errorf("参数解析失败: %w", err)), nil
 		}
 		if args.Limit <= 0 || args.Limit > 10 {
 			args.Limit = 10
 		}
 		memories, err := s.repo.SearchMemories(ctx, args.Query, args.Limit)
 		if err != nil {
-			return toolError(err)
+			return toolError(err), nil
 		}
-		for _, m := range memories {
-			recalled[m.ID] = true
-		}
-		return toolJSON(memories)
+		return toolJSON(memories), memories
 
 	case "get_memory_source":
 		var args struct {
 			MemoryID int64 `json:"memory_id"`
 		}
 		if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
-			return toolError(fmt.Errorf("参数解析失败: %w", err))
+			return toolError(fmt.Errorf("参数解析失败: %w", err)), nil
 		}
 		if args.MemoryID <= 0 {
-			return toolError(fmt.Errorf("memory_id 必须是正整数"))
+			return toolError(fmt.Errorf("memory_id 必须是正整数")), nil
 		}
-		if !recalled[args.MemoryID] {
-			return toolError(fmt.Errorf("memory_id %d 未在本轮召回，无权访问", args.MemoryID))
+		if !seen[args.MemoryID] {
+			return toolError(fmt.Errorf("memory_id %d 未在本轮召回，无权访问", args.MemoryID)), nil
 		}
 		sources, err := s.repo.ListMemorySources(ctx, args.MemoryID)
 		if err != nil {
-			return toolError(err)
+			return toolError(err), nil
 		}
-		return toolJSON(map[string]any{"memory_id": args.MemoryID, "sources": sources})
+		return toolJSON(map[string]any{"memory_id": args.MemoryID, "sources": sources}), nil
 
 	default:
-		return toolError(fmt.Errorf("未知工具 %q", call.Name))
+		return toolError(fmt.Errorf("未知工具 %q", call.Name)), nil
 	}
 }
 

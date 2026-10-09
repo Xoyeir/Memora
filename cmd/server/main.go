@@ -23,8 +23,13 @@ func main() {
 	}
 	defer repo.Close()
 
+	clock, err := service.NewClock(cfg.Timezone)
+	if err != nil {
+		log.Fatalf("初始化时区失败: %v", err)
+	}
+
 	llmClient := llm.NewClient(cfg)
-	svc := service.NewService(repo, llmClient)
+	svc := service.NewService(repo, llmClient, clock)
 
 	journalHandler := handler.NewJournalHandler(svc)
 	chatHandler := handler.NewChatHandler(svc)

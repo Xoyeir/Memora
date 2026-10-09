@@ -4,24 +4,24 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Xoyeir/memora/internal/llm"
 	"github.com/Xoyeir/memora/internal/model"
 	"github.com/Xoyeir/memora/internal/repository"
 )
 
 type Service struct {
-	repo *repository.Repository
-	llm  *llm.Client
+	repo  *repository.Repository
+	llm   LLMClient
+	clock *Clock
 }
 
-func NewService(repo *repository.Repository, llm *llm.Client) *Service {
-	return &Service{repo: repo, llm: llm}
+func NewService(repo *repository.Repository, llm LLMClient, clock *Clock) *Service {
+	return &Service{repo: repo, llm: llm, clock: clock}
 }
 
 type CreateJournalResult struct {
-	JournalID int64              `json:"journal_id"`
+	JournalID int64                `json:"journal_id"`
 	Insight   model.JournalInsight `json:"insight"`
-	Memories  []model.Memory     `json:"memories"`
+	Memories  []model.Memory       `json:"memories"`
 }
 
 func (s *Service) CreateJournal(ctx context.Context, content string) (*CreateJournalResult, error) {

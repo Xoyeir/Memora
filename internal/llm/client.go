@@ -5,8 +5,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -91,20 +94,65 @@ type chatResponse struct {
 			Content   string     `json:"content"`
 			ToolCalls []toolCall `json:"tool_calls"`
 		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
 }
 
-func (c *Client) doChat(ctx context.Context, reqBody chatRequest, timeout time.Duration) (*chatResponse, error) {
+// logTruncation 记录因为达到输出上限而中断的回复。
+//
+// 没有这一步，「回复很短」和「回复被截断」在日志里长得一模一样：
+// 两者都是正常结束、都存进库。finish_reason 是唯一能区分它们的信号。
+func logTruncation(where, finishReason string, n int) {
+	if finishReason == "length" {
+		log.Printf("llm: %s 的输出达到上限被截断（finish_reason=length），已输出 %d 字节", where, n)
+	}
+}
+
+type retryableError struct {
+	statusCode int
+	body       string
+}
+
+func (e *retryableError) Error() string {
+	return fmt.Sprintf("LLM 返回可重试状态码 %d: %s", e.statusCode, e.body)
+}
+
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var re *retryableError
+	if errors.As(err, &re) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) {
+		return true
+	}
+	return false
+}
+
+func waitBackoff(ctx context.Context, attempt int) bool {
+	backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+	select {
+	case <-time.After(backoff):
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (c *Client) doHTTP(ctx context.Context, reqBody chatRequest) (*http.Response, error) {
 	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("构造请求体失败: %w", err)
 	}
-
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -117,15 +165,52 @@ func (c *Client) doChat(ctx context.Context, reqBody chatRequest, timeout time.D
 	if err != nil {
 		return nil, fmt.Errorf("调用 LLM 失败: %w", err)
 	}
+
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			return nil, &retryableError{statusCode: resp.StatusCode, body: string(b)}
+		}
+		return nil, fmt.Errorf("LLM 返回非 200 状态码 %d: %s", resp.StatusCode, string(b))
+	}
+
+	return resp, nil
+}
+
+func (c *Client) doChat(ctx context.Context, reqBody chatRequest) (*chatResponse, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			if !waitBackoff(ctx, attempt) {
+				return nil, ctx.Err()
+			}
+		}
+		chatResp, err := c.doChatOnce(ctx, reqBody)
+		if err == nil {
+			return chatResp, nil
+		}
+		lastErr = err
+		if !isRetryable(err) {
+			break
+		}
+	}
+	return nil, lastErr
+}
+
+func (c *Client) doChatOnce(ctx context.Context, reqBody chatRequest) (*chatResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+
+	resp, err := c.doHTTP(ctx, reqBody)
+	if err != nil {
+		return nil, err
+	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("读取响应失败: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("LLM 返回非 200 状态码 %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var chatResp chatResponse
@@ -149,10 +234,11 @@ func (c *Client) chat(ctx context.Context, messages []chatMessage, wantJSON bool
 	if wantJSON {
 		reqBody.ResponseFormat = &responseFormat{Type: "json_object"}
 	}
-	chatResp, err := c.doChat(ctx, reqBody, requestTimeout)
+	chatResp, err := c.doChat(ctx, reqBody)
 	if err != nil {
 		return "", err
 	}
+	logTruncation("非流式回复", chatResp.Choices[0].FinishReason, len(chatResp.Choices[0].Message.Content))
 	return chatResp.Choices[0].Message.Content, nil
 }
 
@@ -180,27 +266,18 @@ func (c *Client) ChatWithTools(ctx context.Context, messages []Message, tools []
 		Messages: toChatMessages(messages),
 		Tools:    tools,
 	}
-	chatResp, err := c.doChat(ctx, reqBody, requestTimeout)
+	chatResp, err := c.doChat(ctx, reqBody)
 	if err != nil {
 		return "", nil, err
 	}
 
 	msg := chatResp.Choices[0].Message
+	logTruncation("工具调用决策", chatResp.Choices[0].FinishReason, len(msg.Content))
 	var calls []ToolCall
 	for _, tc := range msg.ToolCalls {
 		calls = append(calls, ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
 	}
 	return msg.Content, calls, nil
-}
-
-func (c *Client) Chat(ctx context.Context, system string, history []Message, user string) (string, error) {
-	messages := make([]chatMessage, 0, len(history)+2)
-	messages = append(messages, chatMessage{Role: "system", Content: system})
-	for _, h := range history {
-		messages = append(messages, chatMessage{Role: h.Role, Content: h.Content})
-	}
-	messages = append(messages, chatMessage{Role: "user", Content: user})
-	return c.chat(ctx, messages, false)
 }
 
 func (c *Client) StreamMessages(ctx context.Context, messages []Message, onDelta func(string)) (string, error) {
@@ -209,33 +286,23 @@ func (c *Client) StreamMessages(ctx context.Context, messages []Message, onDelta
 		Messages: toChatMessages(messages),
 		Stream:   true,
 	}
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("构造请求体失败: %w", err)
-	}
 
-	ctx, cancel := context.WithTimeout(ctx, streamTimeout)
+	// 拿到 2xx 流式响应是 commitment 边界：此前可重试，此后进入 stream 任何中途错误都直接结束、绝不重试，避免重复计费 + 重复输出已发送内容。
+	resp, cancel, err := c.doStream(ctx, reqBody)
+	if err != nil {
+		return "", err
+	}
 	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("创建请求失败: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("调用 LLM 失败: %w", err)
-	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("LLM 返回非 200 状态码 %d: %s", resp.StatusCode, string(respBody))
-	}
-
 	var full strings.Builder
+	// [DONE] 是当前协议的结束标志。没有它就不是一次完整生成——
+	// 对端可能在输出一半后干净地关掉连接，scanner 不会报错，
+	// 只有这个标志能区分「正常结束」和「提前断流」。
+	terminated := false
+	// finish_reason 只在最后一个 chunk 里出现，且那一块的 delta 是空的，
+	// 所以不能等它有正文时才读。
+	var finishReason string
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -244,6 +311,7 @@ func (c *Client) StreamMessages(ctx context.Context, messages []Message, onDelta
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
+			terminated = true
 			break
 		}
 		var chunk struct {
@@ -251,18 +319,53 @@ func (c *Client) StreamMessages(ctx context.Context, messages []Message, onDelta
 				Delta struct {
 					Content string `json:"content"`
 				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
 		}
-		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		if fr := chunk.Choices[0].FinishReason; fr != "" {
+			finishReason = fr
+		}
+		if chunk.Choices[0].Delta.Content != "" {
 			full.WriteString(chunk.Choices[0].Delta.Content)
 			onDelta(chunk.Choices[0].Delta.Content)
 		}
 	}
+
+	// 已经流给用户的内容一并返回：调用方需要区分「断流」和「整轮没有发生」。
 	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("读取流式响应失败: %w", err)
+		return full.String(), fmt.Errorf("读取流式响应失败: %w", err)
 	}
+	if !terminated {
+		return full.String(), fmt.Errorf("流式响应没有正常结束：没有收到 %s", "[DONE]")
+	}
+	logTruncation("流式回复", finishReason, full.Len())
 	return full.String(), nil
+}
+
+func (c *Client) doStream(ctx context.Context, reqBody chatRequest) (*http.Response, context.CancelFunc, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			if !waitBackoff(ctx, attempt) {
+				return nil, nil, ctx.Err()
+			}
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, streamTimeout)
+		resp, err := c.doHTTP(attemptCtx, reqBody)
+		if err == nil {
+			return resp, cancel, nil
+		}
+		cancel()
+		lastErr = err
+		if !isRetryable(err) {
+			break
+		}
+	}
+	return nil, nil, lastErr
 }
