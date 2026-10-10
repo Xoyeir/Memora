@@ -26,9 +26,7 @@ type chatRequest struct {
 	ClientID string `json:"client_id"`
 }
 
-// checkChatRequest 校验并返回客户端给出的请求标识。
-//
-// client_id 是幂等的基础：缺失时无法判断两次请求是不是同一次发送，只能要求前端补上。
+// checkChatRequest 校验请求并返回 client_id：client_id 是幂等的基础，缺失时两次请求无法区分。
 func checkChatRequest(req *chatRequest) (string, string) {
 	if req.Message == "" {
 		return "", "message 不能为空"
@@ -53,9 +51,7 @@ type recoverRequest struct {
 	ClientID string `json:"client_id"`
 }
 
-// RecoverFormation 补写某一轮没写成的记忆。
-//
-// 只在回复已经成功、但记忆没写成时才需要调用，由客户端或人工显式触发。
+// RecoverFormation 补写回复已成功、记忆没写成的那一轮，由客户端显式触发。
 func (h *ChatHandler) RecoverFormation(c *gin.Context) {
 	var req recoverRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -128,7 +124,7 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 		return
 	}
 
-	// 流开始前不写任何 SSE 头，这样「标识冲突」「正在处理中」还能返回真正的 HTTP 状态码。
+	// 流开始前不写 SSE 头，标识冲突等错误才能返回真正的 HTTP 状态码。
 	started := false
 	send := func(payload any) {
 		if !started {
@@ -149,7 +145,6 @@ func (h *ChatHandler) ChatStream(c *gin.Context) {
 		return
 	}
 
-	// 客户端已经断开时再写事件没有意义。
 	if c.Request.Context().Err() != nil {
 		return
 	}

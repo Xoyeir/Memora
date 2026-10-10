@@ -1,9 +1,5 @@
 <template>
   <div class="chat">
-    <header class="topbar">
-      <span class="logo">Memora</span>
-    </header>
-
     <div ref="scrollEl" class="scroll">
       <div class="inner">
         <div v-if="!messages.length" class="empty">
@@ -25,7 +21,7 @@
         <div v-for="(msg, i) in messages" :key="i" class="row" :class="msg.role">
           <div v-if="msg.content" class="body">
             <div v-if="msg.role === 'user'" class="plain">{{ msg.content }}</div>
-            <!-- 净化后的 HTML 是这里唯一的内容；光标由 CSS 加在末尾，不往这段字符串上拼东西 -->
+            <!-- v-html 只放净化后的内容，光标由 CSS 追加，不往这段字符串里拼 -->
             <div
               v-else
               class="md"
@@ -90,7 +86,6 @@ interface Msg {
   content: string
   clientId?: string
   failed?: string
-  // 助手行专有：这条回复在流式里被中断过，内容不完整
   incomplete?: boolean
   recalled?: RecalledMemory[]
   open?: boolean
@@ -133,8 +128,6 @@ onMounted(async () => {
     messages.value = (await fetchHistory()).map((m) => ({
       role: m.role,
       content: m.content,
-      // 断掉的回复带着 client_id 回来，所以刷新之后的重试落在原来那一轮上，
-      // 不会另起一条用户消息。
       clientId: m.client_id,
       incomplete: m.status === 'partial',
     }))
@@ -143,7 +136,6 @@ onMounted(async () => {
   }
 })
 
-// 重试入口有两种来源：这一轮在本地发送失败了，或者服务端存着一条没写完的回复。
 function showRetry(i: number) {
   const msg = messages.value[i]
   if (msg?.role !== 'user' || !msg.clientId) return false
@@ -201,7 +193,6 @@ async function send() {
   await sendText(text)
 }
 
-// 重试复用原来的 clientId：后端据此认出是同一轮，不会新建用户消息或重复写记忆。
 async function retry(i: number) {
   if (loading.value) return
   const msg = messages.value[i]
@@ -216,8 +207,9 @@ async function retry(i: number) {
 .chat {
   position: relative;
   display: flex;
+  flex: 1;
   flex-direction: column;
-  height: 100%;
+  min-height: 0;
 }
 
 .scroll {
@@ -239,22 +231,6 @@ async function retry(i: number) {
 .scroll:hover::-webkit-scrollbar-thumb {
   background: var(--border-strong);
   background-clip: content-box;
-}
-
-.topbar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  height: 52px;
-  padding: 0 24px;
-  border-bottom: 1px solid var(--border);
-}
-
-.logo {
-  color: var(--text-muted);
-  font-size: 14px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
 }
 
 .inner {
@@ -331,7 +307,6 @@ async function retry(i: number) {
   word-break: break-word;
 }
 
-/* 用户消息是纯文本，换行照原样保留 */
 .row.user .body {
   max-width: 80%;
   padding: 12px 18px;
@@ -341,7 +316,6 @@ async function retry(i: number) {
   line-height: 1.6;
 }
 
-/* v-html 生成的元素拿不到 scoped 的标记，这里统一走 :deep */
 .md :deep(> :first-child) {
   margin-top: 0;
 }
@@ -395,7 +369,6 @@ async function retry(i: number) {
   font-size: 0.9em;
 }
 
-/* 代码块自己横向滚动，不把整页撑宽 */
 .md :deep(pre) {
   margin: 0 0 12px;
   padding: 12px 14px;
@@ -411,8 +384,6 @@ async function retry(i: number) {
   line-height: 1.6;
 }
 
-/* 流式光标挂在最后一个块的末尾。它是 CSS 加的，不在 v-html 的内容里，
-   所以不存在「净化之后再拼接」的问题。 */
 .md.streaming :deep(> :last-child)::after {
   content: '';
   display: inline-block;
@@ -597,12 +568,7 @@ async function retry(i: number) {
   color: var(--danger);
 }
 
-/* 窄屏：收窄留白，气泡更宽，空状态标题不占满一行 */
 @media (max-width: 640px) {
-  .topbar {
-    padding: 0 16px;
-  }
-
   .inner {
     gap: 22px;
     padding: 24px 16px 150px;

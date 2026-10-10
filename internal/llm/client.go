@@ -101,10 +101,7 @@ type chatResponse struct {
 	} `json:"error"`
 }
 
-// logTruncation 记录因为达到输出上限而中断的回复。
-//
-// 没有这一步，「回复很短」和「回复被截断」在日志里长得一模一样：
-// 两者都是正常结束、都存进库。finish_reason 是唯一能区分它们的信号。
+// logTruncation 记录因达到输出上限被截断的回复，靠 finish_reason 与「回复很短」区分。
 func logTruncation(where, finishReason string, n int) {
 	if finishReason == "length" {
 		log.Printf("llm: %s 的输出达到上限被截断（finish_reason=length），已输出 %d 字节", where, n)
@@ -287,7 +284,7 @@ func (c *Client) StreamMessages(ctx context.Context, messages []Message, onDelta
 		Stream:   true,
 	}
 
-	// 拿到 2xx 流式响应是 commitment 边界：此前可重试，此后进入 stream 任何中途错误都直接结束、绝不重试，避免重复计费 + 重复输出已发送内容。
+	// 拿到 2xx 流式响应是分界点：此前可重试，此后中途错误不重试（重试会重复计费与输出）。
 	resp, cancel, err := c.doStream(ctx, reqBody)
 	if err != nil {
 		return "", err
@@ -296,12 +293,9 @@ func (c *Client) StreamMessages(ctx context.Context, messages []Message, onDelta
 	defer resp.Body.Close()
 
 	var full strings.Builder
-	// [DONE] 是当前协议的结束标志。没有它就不是一次完整生成——
-	// 对端可能在输出一半后干净地关掉连接，scanner 不会报错，
-	// 只有这个标志能区分「正常结束」和「提前断流」。
+	// [DONE] 是协议结束标志：对端可能输出一半后干净断开，scanner 不会报错。
 	terminated := false
-	// finish_reason 只在最后一个 chunk 里出现，且那一块的 delta 是空的，
-	// 所以不能等它有正文时才读。
+	// finish_reason 只在最后一个 chunk 出现，且那块的 delta 是空的。
 	var finishReason string
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
@@ -337,7 +331,7 @@ func (c *Client) StreamMessages(ctx context.Context, messages []Message, onDelta
 		}
 	}
 
-	// 已经流给用户的内容一并返回：调用方需要区分「断流」和「整轮没有发生」。
+	// 已流出的内容一并返回，调用方要区分「断流」和「整轮没发生」。
 	if err := scanner.Err(); err != nil {
 		return full.String(), fmt.Errorf("读取流式响应失败: %w", err)
 	}

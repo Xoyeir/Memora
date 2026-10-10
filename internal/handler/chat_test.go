@@ -41,7 +41,6 @@ func TestCheckChatRequest(t *testing.T) {
 	}
 }
 
-// 冲突和「正在处理中」要能被前端区分出来，而不是一律当成服务端错误。
 func TestChatErrorStatus(t *testing.T) {
 	if got := chatErrorStatus(service.ErrClientIDConflict); got != http.StatusConflict {
 		t.Fatalf("标识冲突返回 %d，期望 409", got)

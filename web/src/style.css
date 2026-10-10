@@ -9,6 +9,13 @@
   --border-strong: #d9d6cc;
   --accent: #d97757;
   --danger: #b3492c;
+
+  --state-auto-bg: #f9efe9;
+  --state-auto-border: #ecd5c9;
+  --state-auto-text: #9c5236;
+  --state-manual-bg: #eef1e8;
+  --state-manual-border: #d8ddcd;
+  --state-manual-text: #5b6b48;
 }
 
 *,

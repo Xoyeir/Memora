@@ -1,5 +1,5 @@
 import { createApp } from 'vue'
-import ChatView from './components/ChatView.vue'
+import App from './App.vue'
 import './style.css'
 
-createApp(ChatView).mount('#app')
+createApp(App).mount('#app')

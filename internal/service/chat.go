@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,38 +19,32 @@ import (
 
 // 幂等与并发相关的错误，handler 依此选择 HTTP 状态码。
 var (
-	// ErrClientIDConflict 同一个 client_id 被用于了不同的内容。
 	ErrClientIDConflict = errors.New("相同请求标识携带了不同的内容")
-	// ErrTurnInProgress 同一个 client_id 的另一次请求正在处理中。
-	ErrTurnInProgress = errors.New("该请求正在处理中")
-	// ErrTurnNotFound 恢复入口找不到这个 client_id 对应的轮次。
-	ErrTurnNotFound = errors.New("找不到这一轮")
-	// ErrTurnNotComplete 回复还没有成功，恢复记忆没有意义，应该走正常重试。
-	ErrTurnNotComplete = errors.New("这一轮的回复还没有成功")
+	ErrTurnInProgress   = errors.New("该请求正在处理中")
+	ErrTurnNotFound     = errors.New("找不到这一轮")
+	ErrTurnNotComplete  = errors.New("这一轮的回复还没有成功")
 )
 
 // writeTimeout 是脱离请求取消后，写业务状态的时限。
 const writeTimeout = 5 * time.Second
 
-// formationLease 是 Formation 的执行租约。
-//
-// 一次 Formation 模型调用的最坏耗时约为 3 次尝试 × 30s 超时 + 退避，约 95 秒。
-// 取 5 分钟留出足够余量：正常执行中的不会被判为过期，进程崩溃留下的 running
-// 也能在 5 分钟后被重新认领。
-const formationLease = 5 * time.Minute
-
-// 恢复入口的返回状态。
+// 「相关 + 最近」合计 20 条；分「相关」是为补久远记忆盲区，不增总量与模型调用。
 const (
-	// RecoverApplied 本次把记忆补写完成。
-	RecoverApplied = "applied"
-	// RecoverAlreadyApplied 记忆早就写完了，什么都没做。
-	RecoverAlreadyApplied = "already_applied"
-	// RecoverInProgress 另一个还在有效期内的执行者正在处理，不抢。
-	RecoverInProgress = "in_progress"
+	recentMemoryRefs  = 12
+	relatedMemoryRefs = 8
 )
 
-// newFormationOwner 生成本次 Formation 执行的归属标识。
-func newFormationOwner() string {
+// Formation 执行租约：模型调用最坏约 95 秒，取 5 分钟留余量，崩溃留下的 running 可被重新认领。
+const formationLease = 5 * time.Minute
+
+const (
+	RecoverApplied        = "applied"
+	RecoverAlreadyApplied = "already_applied"
+	RecoverInProgress     = "in_progress"
+)
+
+// 生成一次执行的归属标识；租约判断靠「这一行还是不是我认领的那次」，每次认领都换新值。
+func newExecOwner() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return fmt.Sprintf("owner-%d", time.Now().UnixNano())
@@ -72,7 +67,7 @@ func (s *Service) Chat(ctx context.Context, clientID, userMessage string) (strin
 	}
 
 	messages := buildAgentMessages(systemPrompt, historyMsgs, userMessage)
-	messages, final, _ := s.runAgent(ctx, messages)
+	messages, final, _ := s.runAgent(ctx, messages, s.clock.LocalDate(turn.turn.CreatedAt))
 
 	if final == "" {
 		if err := ctx.Err(); err != nil {
@@ -109,13 +104,12 @@ func (s *Service) ChatStream(ctx context.Context, clientID, userMessage string,
 	}
 
 	messages := buildAgentMessages(systemPrompt, historyMsgs, userMessage)
-	messages, _, recalled := s.runAgent(ctx, messages)
+	messages, _, recalled := s.runAgent(ctx, messages, s.clock.LocalDate(turn.turn.CreatedAt))
 
 	if len(recalled) > 0 {
 		onRecall(recalled)
 	}
 
-	// 取消之后不再发起任何模型请求。
 	if err := ctx.Err(); err != nil {
 		return s.abortTurn(ctx, turn.turn.ID, "", err)
 	}
@@ -131,11 +125,7 @@ func (s *Service) ChatStream(ctx context.Context, clientID, userMessage string,
 	return nil
 }
 
-// ChatHistory 返回界面上要显示的历史。
-//
-// 它和送进模型的上下文用的是两条查询：这里会多带回断掉一半的回复，
-// 上下文那边只认完整结束的轮次。同一条 partial 回复可以出现在界面上，
-// 但不能被当成完整回答送进下一轮——那是两件事，不该共用一条查询。
+// 比送进模型的上下文多带回断掉一半的回复；partial 可显示，但不能当完整回答进下一轮。
 func (s *Service) ChatHistory(ctx context.Context, limit int) ([]model.ChatMessage, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
@@ -143,15 +133,12 @@ func (s *Service) ChatHistory(ctx context.Context, limit int) ([]model.ChatMessa
 	return s.repo.ListConversationForDisplay(ctx, limit)
 }
 
-// turnRef 是一次发送的处理句柄。
-// done 非空时表示这一轮此前已经成功结束，其值就是当时保存的回复。
+// turnRef 的 done 非空表示这一轮此前已经成功结束，其值就是当时保存的回复。
 type turnRef struct {
 	turn *model.ChatTurn
 	done string
 }
 
-// beginTurn 完成幂等入口的全部判断：
-// 拿到（或创建）本轮的行、校验内容一致、判断是否已完成、拒绝并发重复处理。
 func (s *Service) beginTurn(ctx context.Context, clientID, userMessage string) (*turnRef, error) {
 	turn, err := s.repo.EnsureUserMessage(ctx, clientID, userMessage)
 	if err != nil {
@@ -184,7 +171,6 @@ func (s *Service) beginTurn(ctx context.Context, clientID, userMessage string) (
 	return &turnRef{turn: turn}, nil
 }
 
-// prepareTurn 读取历史、按需执行一次 Formation，并组装本轮的 system prompt。
 func (s *Service) prepareTurn(ctx context.Context, turn *model.ChatTurn) (string, []llm.Message, error) {
 	history, err := s.repo.ListChatMessages(ctx, turn.ID, 20)
 	if err != nil {
@@ -193,8 +179,7 @@ func (s *Service) prepareTurn(ctx context.Context, turn *model.ChatTurn) (string
 
 	formation, err := s.tryFormation(ctx, turn, history)
 	if err != nil {
-		// 记忆写入失败不影响这一轮回复，这里只记录、不中断整轮。
-		// 请求已经被取消的情况由调用方检查 ctx.Err() 处理。
+		// 记忆写入失败不影响本轮回复，只记录；取消由调用方检查 ctx.Err()。
 		log.Printf("chat: 轮次 %d 的记忆写入没有完成（不影响回复）: %v", turn.ID, err)
 	}
 
@@ -202,15 +187,12 @@ func (s *Service) prepareTurn(ctx context.Context, turn *model.ChatTurn) (string
 	for i, m := range history {
 		historyMsgs[i] = llm.Message{Role: m.Role, Content: m.Content}
 	}
-	return buildResponseSystemPrompt(formation), historyMsgs, nil
+	return buildResponseSystemPrompt(formation, s.clock.LocalDate(turn.CreatedAt)), historyMsgs, nil
 }
 
-// tryFormation 在拿得到执行权时跑一次 Formation。
-//
-// 拿不到执行权不是错误：说明这一轮已经写过（applied），或者另一个还在有效期内的
-// 执行者正在处理（running）。两种情况都不该重跑，也不该报给用户。
+// 拿不到执行权不是错误：说明这一轮已写过或另一有效执行者正在处理，都不重跑也不报错。
 func (s *Service) tryFormation(ctx context.Context, turn *model.ChatTurn, history []model.ChatMessage) (*llm.FormationResult, error) {
-	owner := newFormationOwner()
+	owner := newExecOwner()
 	claimed, err := s.repo.ClaimFormation(ctx, turn.ID, owner, int(formationLease.Seconds()))
 	if err != nil {
 		return nil, fmt.Errorf("认领记忆写入失败: %w", err)
@@ -221,25 +203,64 @@ func (s *Service) tryFormation(ctx context.Context, turn *model.ChatTurn, histor
 	return s.runFormation(ctx, turn, history, owner)
 }
 
-// runFormation 执行一次记忆形成。
-//
-// 模型调用在事务之外；通过校验的这一批写入连同 formation_status=applied
-// 在同一个事务里提交，任一失败整批回滚。
+// 只用当前消息检索「相关 + 最近」；只给最近会留盲区，久远记忆会让改写变成矛盾的新记忆。
+func (s *Service) formationMemories(ctx context.Context, turn *model.ChatTurn) ([]model.Memory, error) {
+	recent, err := s.repo.ListMemories(ctx, recentMemoryRefs)
+	if err != nil {
+		return nil, err
+	}
+	related, err := s.repo.SearchMemories(ctx, turn.Content, relatedMemoryRefs)
+	if err != nil {
+		return nil, err
+	}
+
+	merged := make([]model.Memory, 0, len(recent)+len(related))
+	seen := make(map[int64]bool, len(recent)+len(related))
+	for _, list := range [][]model.Memory{recent, related} {
+		for _, m := range list {
+			if seen[m.ID] {
+				continue
+			}
+			seen[m.ID] = true
+			merged = append(merged, m)
+		}
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].ID > merged[j].ID })
+	return merged, nil
+}
+
+// 模型调用在事务外；通过校验的长期记忆与生活记录连同 formation_status=applied 在同一事务提交，任一失败整批回滚。
 func (s *Service) runFormation(ctx context.Context, turn *model.ChatTurn, history []model.ChatMessage, owner string) (*llm.FormationResult, error) {
-	memories, err := s.repo.ListMemories(ctx, 20)
+	memories, err := s.formationMemories(ctx, turn)
 	if err != nil {
 		s.abandonFormation(ctx, turn.ID, owner)
 		return nil, fmt.Errorf("读取记忆失败: %w", err)
 	}
 
-	formation, err := s.llm.Formation(ctx, buildFormationInput(turn.ID, turn.Content, history, memories))
+	// 送进 Formation 供模型引用做纠正，只含用户本人且仍然成立的记录。
+	lifeRecords, err := s.repo.ListRecentLifeRecords(ctx, recentLifeRecordRefs)
+	if err != nil {
+		s.abandonFormation(ctx, turn.ID, owner)
+		return nil, fmt.Errorf("读取生活记录失败: %w", err)
+	}
+
+	formation, err := s.llm.Formation(ctx, buildFormationInput(turn.ID, turn.Content, history, memories, lifeRecords))
 	if err != nil {
 		s.abandonFormation(ctx, turn.ID, owner)
 		return nil, err
 	}
 
 	ops := planMemoryOps(formation.MemoryActions, turn.ID, memories)
-	if err := s.repo.ApplyFormation(ctx, turn.ID, owner, ops); err != nil {
+
+	// 「昨天」以这条消息落库那天为基准，不是 time.Now()：重试/恢复读到的是同一行的 created_at。
+	mentionedOn := s.clock.LocalDate(turn.CreatedAt)
+	knownLife := make(map[int64]bool, len(lifeRecords))
+	for _, r := range lifeRecords {
+		knownLife[r.ID] = true
+	}
+	lifeOps := planLifeRecords(formation.LifeRecords, turn.ID, turn.Content, mentionedOn, knownLife)
+
+	if err := s.repo.ApplyFormation(ctx, turn.ID, owner, ops, lifeOps); err != nil {
 		if errors.Is(err, repository.ErrFormationLeaseLost) {
 			// 已经被别人接手并写完了，这不是失败，也不该把状态降回去。
 			log.Printf("chat: 轮次 %d 的记忆写入归属已失效，放弃本次结果", turn.ID)
@@ -252,10 +273,7 @@ func (s *Service) runFormation(ctx context.Context, turn *model.ChatTurn, histor
 	return formation, nil
 }
 
-// abandonFormation 把本轮退回可重试状态。
-//
-// 用脱离请求取消的短超时 context：这是状态落库，不是业务或模型调用，
-// 请求已经被取消时也必须把 running 放掉，否则只能等租约过期。
+// 用脱离请求取消的短超时 context：请求已取消也要放掉 running，否则只能等租约过期。
 func (s *Service) abandonFormation(ctx context.Context, turnID int64, owner string) {
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
 	defer cancel()
@@ -264,9 +282,7 @@ func (s *Service) abandonFormation(ctx context.Context, turnID int64, owner stri
 	}
 }
 
-// abortTurn 记录一次未完成的轮次并返回原始错误。
-//
-// partial 是已经流给用户的内容；它必须落库，否则「回复断流」会被误当成「整轮没有发生」。
+// partial 是已流给用户的内容，必须落库，否则「回复断流」会被误当成「整轮没发生」。
 func (s *Service) abortTurn(ctx context.Context, turnID int64, partial string, cause error) error {
 	status := model.TurnStatusFailed
 	if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
@@ -289,11 +305,7 @@ func buildAgentMessages(systemPrompt string, historyMsgs []llm.Message, userMess
 	return messages
 }
 
-// planMemoryOps 把模型的原始输出转成一批「准备执行」的操作。
-//
-// 这一步只做校验，不碰数据库：引用解析不出来、指向不存在的记忆、
-// 缺必填字段的 action 在这里被明确拒绝并丢掉。
-// 被拒绝是模型输出的问题，不是写入失败——剩下的合法操作照常执行。
+// 只做校验不碰库：解析不出引用/指向不存在的记忆/缺必填字段的 action 在此丢弃，其余照常执行。
 func planMemoryOps(actions []llm.MemoryAction, userChatID int64, memories []model.Memory) []model.MemoryOp {
 	known := make(map[int64]bool, len(memories))
 	for _, m := range memories {
@@ -385,10 +397,7 @@ func planMemoryOps(actions []llm.MemoryAction, userChatID int64, memories []mode
 	return ops
 }
 
-// RecoverFormation 是补写记忆的入口：回复已经成功、但记忆没写成的轮次，
-// 由调用方显式触发一次补写。
-//
-// 它只补记忆，不碰回复——回复的内容不会因为补记忆而变化，也不会重新生成。
+// 补写「回复已成功但记忆没写成」的轮次；只补记忆，不碰也不重生成回复。
 func (s *Service) RecoverFormation(ctx context.Context, clientID string) (string, error) {
 	turn, err := s.repo.FindTurnByClientID(ctx, clientID)
 	if err != nil {
@@ -404,20 +413,19 @@ func (s *Service) RecoverFormation(ctx context.Context, clientID string) (string
 		return RecoverAlreadyApplied, nil
 	}
 
-	// 只取这一轮之前的历史：恢复针对的是原来那条消息，
-	// 后面发生的聊天不能进入这一轮的上下文。
+	// 只取这一轮之前的历史：后面发生的聊天不能进入这一轮的上下文。
 	history, err := s.repo.ListChatMessages(ctx, turn.ID, 20)
 	if err != nil {
 		return "", fmt.Errorf("读取历史失败: %w", err)
 	}
 
-	owner := newFormationOwner()
+	owner := newExecOwner()
 	claimed, err := s.repo.ClaimFormation(ctx, turn.ID, owner, int(formationLease.Seconds()))
 	if err != nil {
 		return "", fmt.Errorf("认领记忆写入失败: %w", err)
 	}
 	if !claimed {
-		// 还在租约内的 running 说明有别处正在处理，不抢。
+		// 还在租约内的 running 说明有别处正在处理。
 		return RecoverInProgress, nil
 	}
 
@@ -427,7 +435,9 @@ func (s *Service) RecoverFormation(ctx context.Context, clientID string) (string
 	return RecoverApplied, nil
 }
 
-func buildFormationInput(chatMessageID int64, userMessage string, history []model.ChatMessage, memories []model.Memory) string {
+func buildFormationInput(chatMessageID int64, userMessage string, history []model.ChatMessage,
+	memories []model.Memory, lifeRecords []model.LifeRecord) string {
+
 	var sb strings.Builder
 	sb.WriteString("最近对话：\n")
 	if len(history) == 0 {
@@ -439,6 +449,16 @@ func buildFormationInput(chatMessageID int64, userMessage string, history []mode
 	}
 
 	fmt.Fprintf(&sb, "\n当前消息：\nchat:%d [user] | %s\n", chatMessageID, userMessage)
+
+	sb.WriteString("\n已有生活记录：\n")
+	if len(lifeRecords) == 0 {
+		sb.WriteString("（无）\n")
+	} else {
+		for _, r := range lifeRecords {
+			sb.WriteString(formatLifeRecordRef(r))
+			sb.WriteString("\n")
+		}
+	}
 
 	sb.WriteString("\n已有长期记忆：\n")
 	if len(memories) == 0 {
@@ -474,7 +494,15 @@ func parseRef(ref, prefix string) (int64, bool) {
 
 const responseSystemPrompt = `你是 Memora，一个长期陪伴和记录用户的个人 AI。
 
-你可以调用工具读取用户的长期记忆（recall_memories）和记忆的原始来源（get_memory_source）。回复需要引用用户过去的信息时，先调用 recall_memories。
+你可以调用工具读取用户的长期记忆（recall_memories）、记忆的原始来源（get_memory_source），以及带出处的日常生活记录（recall_life_records）。
+
+要不要调用只看一件事：这一步是不是真的缺了只有这些工具才能提供的信息。当前输入已经足够完成任务时就直接做——翻译、改写、解释、算数、写代码、闲聊都属于这类，不要为了「也许有帮助」先查一遍，也不要只因为句子里提到了某件事就去查那件事。反过来，当回答确实依赖用户过去的经历、偏好或某个具体日期时，先查再答，不要凭印象替代。
+
+查不到东西就如实说没有记录，也不要把查到的内容当成用户没问的东西硬塞进回答。
+
+* 生活记录里 occurred_on 为空表示这件事发生在哪天并不知道（用户可能只说「三年前」），不要替它安一个日期。
+* state 是 planned 说明还没做，negated 说明用户明确说没做，只有 done 才是已经发生。别把计划说成完成，也别把没记录说成没发生。
+* 召回结果是有限的，不能拿它当完整的活动统计去下结论。
 
 你的目标是自然地回应用户，而不是急着分析他或解决他的问题。
 
@@ -501,9 +529,12 @@ const responseSystemPrompt = `你是 Memora，一个长期陪伴和记录用户�
 用户真的来求解时，再认真帮他解决。
 `
 
-func buildResponseSystemPrompt(formation *llm.FormationResult) string {
+// today 来自落库的原始消息时间，不是 time.Now()：重试同一轮必须是同一个值，否则「昨天」会变。
+func buildResponseSystemPrompt(formation *llm.FormationResult, today string) string {
 	var sb strings.Builder
 	sb.WriteString(responseSystemPrompt)
+
+	fmt.Fprintf(&sb, "\n今天是 %s。用户说「今天」「昨天」「上周」时，以这一天为基准。\n", today)
 
 	if formation != nil {
 		sb.WriteString("\n本轮你对用户当前消息的理解：\n")

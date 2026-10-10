@@ -29,8 +29,7 @@ func readAllMigrations(t *testing.T, dir string) string {
 	return sb.String()
 }
 
-// 测试库的入口只认 MEMORA_TEST_DSN：没有配置时跳过，配置不合法时拒绝执行，
-// 绝不回退到应用的开发库配置。
+// 测试库入口只认 MEMORA_TEST_DSN：未配置则跳过，不合法则拒绝，不回退开发库。
 func TestParseTestDSNRejectsUnsafeTargets(t *testing.T) {
 	cases := []struct {
 		name string
@@ -71,9 +70,9 @@ func TestParseTestDSNAcceptsTestDatabase(t *testing.T) {
 	}
 }
 
-// 指向开发库时必须在做任何事之前就失败——不能先连上去、更不能先建库。
+// 指向开发库时必须先于任何操作失败：不能先连上，更不能先建库。
 func TestConnectRefusesDevDatabaseBeforeTouchingAnything(t *testing.T) {
-	// 故意指向一个连不上的地址：如果校验发生在连接之后，报错会是连接错误而不是库名错误。
+	// 故意指向连不上的地址：若校验晚于连接，报错就是连接错误而非库名错误。
 	const dsn = "root:pw@tcp(127.0.0.1:1)/memora?charset=utf8mb4"
 
 	db, repo, err := Connect(dsn)
@@ -88,7 +87,7 @@ func TestConnectRefusesDevDatabaseBeforeTouchingAnything(t *testing.T) {
 	}
 }
 
-// 迁移里的 USE / CREATE DATABASE 不能被执行：连接必须一直停在测试库上。
+// 迁移里的 USE / CREATE DATABASE 必须被丢弃：连接要一直停在测试库上。
 func TestSplitStatementsDropsDatabaseSwitching(t *testing.T) {
 	statements := splitStatements(`
 -- 注释行
@@ -121,8 +120,7 @@ insert into t values (1);
 	}
 }
 
-// 真实仓库里的迁移也必须过这一关：001 里的 use memora; 一旦被执行，
-// 后面所有语句都会落到开发库上。
+// 真实迁移里出现一句 use <库名>，后面的语句就会落到那个库上，不再是测试库。
 func TestRealMigrationsNeverSwitchDatabase(t *testing.T) {
 	dir, err := migrationsDir()
 	if err != nil {
@@ -132,7 +130,6 @@ func TestRealMigrationsNeverSwitchDatabase(t *testing.T) {
 		t.Fatal("没有找到 migrations 目录")
 	}
 
-	// 直接检查语句文本，不需要数据库。
 	raw := readAllMigrations(t, dir)
 	for _, stmt := range splitStatements(raw) {
 		lower := strings.ToLower(strings.TrimSpace(stmt))

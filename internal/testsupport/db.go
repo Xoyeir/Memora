@@ -1,12 +1,4 @@
-// Package testsupport 提供测试用的真实数据库准备逻辑。
-//
-// 这些测试刻意连真实 MySQL，因为本轮要验证的是唯一键、条件 UPDATE 这类
-// 数据库行为——用替身测出来的是替身的行为，不是 MySQL 的行为。
-//
-// 测试库的隔离靠三条硬规则，全部在任何写操作之前完成：
-//  1. 只认 MEMORA_TEST_DSN，不存在任何回退到 DB_NAME / DB_PASSWORD 的路径；
-//  2. 库名必须符合测试库命名规则，否则直接拒绝，不做猜测；
-//  3. 迁移里的 USE / CREATE DATABASE 被丢弃，连接始终停在测试库上。
+// Package testsupport 提供测试库准备：只认 MEMORA_TEST_DSN，库名须 _test 结尾，迁移里的 USE / CREATE DATABASE 被丢弃。
 package testsupport
 
 import (
@@ -26,7 +18,7 @@ import (
 	"github.com/Xoyeir/Memora/internal/repository"
 )
 
-// EnvDSN 是测试库的连接串。未设置时所有依赖数据库的测试都会被跳过。
+// EnvDSN 未设置时依赖数据库的测试会被跳过。
 const EnvDSN = "MEMORA_TEST_DSN"
 
 var (
@@ -35,10 +27,13 @@ var (
 	setupDSN  string
 )
 
-// tables 是本轮测试会写到的表，按外键依赖倒序排列，便于清理。
-var tables = []string{"memory_sources", "memories", "chat_messages"}
+// 按外键依赖倒序排列，便于清理。
+var tables = []string{
+	"memory_corrections", "life_records", "memory_sources", "memories",
+	"chat_messages", "day_states",
+}
 
-// Open 是测试入口。未配置测试库时跳过，配置不合法时直接失败。
+// Open 是测试入口：未配置测试库时跳过，配置不合法时直接失败。
 func Open(t *testing.T) (*sql.DB, *repository.Repository) {
 	t.Helper()
 
@@ -57,10 +52,24 @@ func Open(t *testing.T) (*sql.DB, *repository.Repository) {
 	return db, repo
 }
 
-// Connect 校验连接串、重建测试库并跑完迁移。
-//
-// 校验全部发生在建库、迁移和任何写操作之前；任一步不通过都返回 error，
-// 不会降级到应用的开发库，也不会去猜一个「差不多」的库名。
+// Prepare 只建测试库，给不经过 Open、自己开连接的测试包用。
+func Prepare() error {
+	dsn := os.Getenv(EnvDSN)
+	if strings.TrimSpace(dsn) == "" {
+		return nil
+	}
+	cfg, err := ParseTestDSN(dsn)
+	if err != nil {
+		return err
+	}
+	setupOnce.Do(func() {
+		setupDSN = dsn
+		setupErr = setup(cfg)
+	})
+	return setupErr
+}
+
+// Connect 校验连接串、重建测试库并跑迁移；校验先于任何写操作，不降级到开发库。
 func Connect(dsn string) (*sql.DB, *repository.Repository, error) {
 	cfg, err := ParseTestDSN(dsn)
 	if err != nil {
@@ -78,8 +87,7 @@ func Connect(dsn string) (*sql.DB, *repository.Repository, error) {
 		return nil, nil, fmt.Errorf("%s 在一次测试运行中发生了变化，测试库只重建一次", EnvDSN)
 	}
 
-	// 用规范化后的连接串：时间语义是在 ParseTestDSN 里补上的，
-	// 直接拿原始串连库会漏掉它。
+	// 用规范化后的连接串：时间语义在 ParseTestDSN 里补上。
 	db, err := sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {
 		return nil, nil, fmt.Errorf("连接测试库失败: %w", err)
@@ -98,10 +106,7 @@ func Connect(dsn string) (*sql.DB, *repository.Repository, error) {
 	return db, repository.FromDB(db), nil
 }
 
-// ParseTestDSN 解析并校验测试库连接串。
-//
-// 这里刻意不接受空串、不接受缺库名的 DSN、不接受不以 _test 结尾的库名：
-// 测试会 DROP 并重建目标库，任何一次误判都意味着删掉真实数据。
+// ParseTestDSN 拒绝空串、缺库名、库名不以 _test 结尾的 DSN：测试会 DROP 重建目标库。
 func ParseTestDSN(dsn string) (*mysql.Config, error) {
 	if strings.TrimSpace(dsn) == "" {
 		return nil, fmt.Errorf("%s 未设置", EnvDSN)
@@ -115,8 +120,7 @@ func ParseTestDSN(dsn string) (*mysql.Config, error) {
 		return nil, err
 	}
 
-	// 时间语义由代码决定，不由连接串决定：测试库和生产库必须用同一套解释方式，
-	// 否则测出来的时间行为跟线上不一致。连接串只提供地址和凭据。
+	// 时间语义由代码决定，连接串只提供地址和凭据。
 	loc, err := time.LoadLocation(repository.StorageTimezone)
 	if err != nil {
 		return nil, fmt.Errorf("加载存储时区失败: %w", err)
@@ -130,7 +134,6 @@ func ParseTestDSN(dsn string) (*mysql.Config, error) {
 	return cfg, nil
 }
 
-// formatSessionTimezone 把存储时区写成一个固定偏移的会话时区值。
 func formatSessionTimezone(loc *time.Location) string {
 	_, offset := time.Date(2026, 1, 1, 0, 0, 0, 0, loc).Zone()
 	sign := "+"
@@ -141,10 +144,7 @@ func formatSessionTimezone(loc *time.Location) string {
 	return fmt.Sprintf("'%s%02d:%02d'", sign, offset/3600, offset%3600/60)
 }
 
-// checkTestDBName 是测试库的命名规则：非空，且以 _test 结尾。
-//
-// 库名会被拼进 DROP / CREATE DATABASE 语句，所以除了后缀规则，
-// 还要确保它只含标识符安全字符——不能只依赖 DSN 解析器的宽容。
+// checkTestDBName 要求库名非空、以 _test 结尾且只含安全字符：它会被拼进 DROP / CREATE DATABASE。
 func checkTestDBName(name string) error {
 	if name == "" {
 		return fmt.Errorf("%s 缺少库名：必须显式指向一个以 _test 结尾的测试库", EnvDSN)
@@ -197,7 +197,7 @@ func setup(cfg *mysql.Config) error {
 		return err
 	}
 
-	// 迁移里万一有语句把连接切走了，这里必须立刻发现，而不是等到某个测试写坏别的库。
+	// 迁移若把连接切走了，这里必须立刻发现。
 	var current string
 	if err := db.QueryRow("SELECT DATABASE()").Scan(&current); err != nil {
 		return err
@@ -208,7 +208,6 @@ func setup(cfg *mysql.Config) error {
 	return nil
 }
 
-// migrationsDir 从当前测试文件向上找到仓库根目录下的 migrations。
 func migrationsDir() (string, error) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
@@ -247,11 +246,7 @@ func applyMigrations(db *sql.DB, dir string) error {
 	return nil
 }
 
-// splitStatements 去掉 -- 注释行后按分号切分。
-// 这些迁移文件里没有字符串字面量含分号，够用。
-//
-// USE 和 CREATE DATABASE 会被丢掉：连接已经停在测试库上，
-// 执行 001 里的 use memora; 会把后续语句整体切到开发库上。
+// splitStatements 去掉 -- 注释行后按分号切分，并丢弃 USE / CREATE DATABASE：连接必须停在测试库上。
 func splitStatements(sqlText string) []string {
 	var cleaned []string
 	for _, line := range strings.Split(sqlText, "\n") {
@@ -276,7 +271,6 @@ func splitStatements(sqlText string) []string {
 	return out
 }
 
-// Truncate 清空测试用到的表，让每个测试从空库开始。
 func Truncate(t *testing.T, db *sql.DB) {
 	t.Helper()
 	for _, table := range tables {

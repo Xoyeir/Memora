@@ -31,6 +31,8 @@ type fakeLLM struct {
 	formationResult *llm.FormationResult
 	formationErr    error
 	formationN      int
+	// formationInput 保留最后一次送进 Formation 的原文，供断言用。
+	formationInput string
 
 	agentReplies []agentReply
 	agentN       int
@@ -38,11 +40,18 @@ type fakeLLM struct {
 	streamText string
 	streamErr  error
 	streamN    int
+
+	// daySummaryInputs 保留每次送进去的原文，供断言输入是否变化。
+	daySummaryResult *llm.DaySummaryResult
+	daySummaryErr    error
+	daySummaryN      int
+	daySummaryInputs []string
 }
 
 func (f *fakeLLM) Formation(ctx context.Context, input string) (*llm.FormationResult, error) {
 	f.mu.Lock()
 	f.formationN++
+	f.formationInput = input
 	res, err := f.formationResult, f.formationErr
 	f.mu.Unlock()
 
@@ -90,6 +99,28 @@ func (f *fakeLLM) ExtractJournal(ctx context.Context, content string) (*llm.Extr
 	return &llm.ExtractionResult{}, nil
 }
 
+func (f *fakeLLM) DaySummary(ctx context.Context, input string) (*llm.DaySummaryResult, error) {
+	f.mu.Lock()
+	f.daySummaryN++
+	f.daySummaryInputs = append(f.daySummaryInputs, input)
+	res, err := f.daySummaryResult, f.daySummaryErr
+	f.mu.Unlock()
+
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return &llm.DaySummaryResult{Label: "未知", Summary: "测试替身没有配置结果"}, nil
+	}
+	return res, nil
+}
+
+func (f *fakeLLM) daySummaryCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.daySummaryN
+}
+
 func (f *fakeLLM) counts() (formation, agent, stream int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -111,7 +142,6 @@ func newTestService(t *testing.T) (*Service, *fakeLLM, *sql.DB) {
 func noopRecall([]model.Memory) {}
 func noopDelta(string)          {}
 
-// turnRow 读回一轮的三个完成状态：用户消息、记忆写入、助手回复。
 func turnRow(t *testing.T, db *sql.DB, clientID string) (userID int64, status, formationStatus string) {
 	t.Helper()
 	err := db.QueryRow(
@@ -225,8 +255,7 @@ func TestToolErrorsDoNotBreakReply(t *testing.T) {
 	}
 }
 
-// 步数耗尽时仍然给出回复，但这一轮不是「正常完成」意义上的无损——
-// 报告里明确记为「工具链被截断后继续生成」。
+// 步数耗尽时仍会流式回复、轮次状态为 ok，但工具链已在中途被截断。
 func TestAgentStepExhaustionStillReplies(t *testing.T) {
 	svc, fake, db := newTestService(t)
 	fake.agentReplies = []agentReply{
@@ -436,9 +465,7 @@ func TestTurnInProgressIsRejected(t *testing.T) {
 	}
 }
 
-// 进程在 Formation 阶段崩掉时，留下的是「running + 回复没成功」。
-// 这种轮次既不能走恢复入口（回复还没成功），也不该被当成「正在处理中」，
-// 否则它永远卡在原地。租约过期后重试必须能重新处理。
+// Formation 崩溃留下「running + 回复未成功」的轮次：既不能走恢复入口也不该被当成处理中，租约过期后重试必须能重新处理。
 func TestStaleRunningDoesNotBlockRetry(t *testing.T) {
 	svc, fake, db := newTestService(t)
 
@@ -530,7 +557,7 @@ func TestFormationIsNotRerunAfterSuccessfulReply(t *testing.T) {
 		t.Fatalf("Formation 调用了 %d 次，期望 1 次", n)
 	}
 
-	// 重放不会补写：补写要走显式的恢复入口，见 TestRecoverFormationRewritesWithoutDuplication。
+	// 重放不补写：补写走显式的恢复入口。
 	_, _, formation := turnRow(t, db, "c-f2")
 	if formation != model.FormationFailed {
 		t.Fatalf("记忆写入状态是 %q，期望仍是 failed", formation)
@@ -573,10 +600,7 @@ func TestRetryAfterReplyFailureDoesNotDuplicateMemories(t *testing.T) {
 	}
 }
 
-// 一批记忆操作里只要有任意一条写失败，整批都必须回滚。
-//
-// 这里用「第二条的证据消息不存在」制造必然失败的外键错误，
-// 不依赖 sql_mode，也不依赖字段长度这类会随环境变化的行为。
+// 批次里任意一条写失败，整批必须回滚。用「证据消息不存在」制造外键错误，不依赖 sql_mode。
 func TestFormationBatchRollsBackOnAnyFailure(t *testing.T) {
 	svc, _, db := newTestService(t)
 
@@ -597,7 +621,7 @@ func TestFormationBatchRollsBackOnAnyFailure(t *testing.T) {
 		{Kind: model.OpForm, Content: "第二条", Category: "goal", ChatMessageID: turn.ID + 100000},
 	}
 
-	if err := svc.repo.ApplyFormation(context.Background(), turn.ID, owner, ops); err == nil {
+	if err := svc.repo.ApplyFormation(context.Background(), turn.ID, owner, ops, nil); err == nil {
 		t.Fatal("第二条写入失败时 ApplyFormation 应当返回错误")
 	}
 
@@ -828,15 +852,14 @@ func TestOldFormationOwnerCannotOverwriteNewResult(t *testing.T) {
 	newOps := []model.MemoryOp{
 		{Kind: model.OpForm, Content: "新执行者写下的记忆", Category: "goal", ChatMessageID: turn.ID},
 	}
-	if err := svc.repo.ApplyFormation(ctx, turn.ID, "new-owner", newOps); err != nil {
+	if err := svc.repo.ApplyFormation(ctx, turn.ID, "new-owner", newOps, nil); err != nil {
 		t.Fatalf("新执行者提交失败: %v", err)
 	}
 
-	// 旧执行者带着自己的一批操作姗姗来迟。
 	oldOps := []model.MemoryOp{
 		{Kind: model.OpForm, Content: "旧执行者的记忆", Category: "goal", ChatMessageID: turn.ID},
 	}
-	if err := svc.repo.ApplyFormation(ctx, turn.ID, "old-owner", oldOps); !errors.Is(err, repository.ErrFormationLeaseLost) {
+	if err := svc.repo.ApplyFormation(ctx, turn.ID, "old-owner", oldOps, nil); !errors.Is(err, repository.ErrFormationLeaseLost) {
 		t.Fatalf("旧执行者应当拿到 ErrFormationLeaseLost，实际是 %v", err)
 	}
 
@@ -885,11 +908,9 @@ func TestCompletedReplySurvivesLateFailures(t *testing.T) {
 
 	for _, tc := range late {
 		t.Run(tc.name, func(t *testing.T) {
-			// 带部分内容的一次迟到写入。
 			if err := svc.repo.FailChatTurn(ctx, turn.ID, tc.status, "迟到的一半"); err != nil {
 				t.Fatalf("FailChatTurn 报错: %v", err)
 			}
-			// 不带内容的一次迟到写入。
 			if err := svc.repo.FailChatTurn(ctx, turn.ID, tc.status, ""); err != nil {
 				t.Fatalf("FailChatTurn 报错: %v", err)
 			}
@@ -911,8 +932,7 @@ func TestCompletedReplySurvivesLateFailures(t *testing.T) {
 		})
 	}
 
-	// 迟到写入之后，读到的世界必须还是「这一轮成功了」：
-	// 历史里这一问一答都在，重发也只重放已存回复。
+	// 迟到写入之后世界仍应表现为这一轮成功：重发只重放已存回复。
 	history, err := svc.ChatHistory(ctx, 50)
 	if err != nil {
 		t.Fatal(err)
@@ -1051,8 +1071,7 @@ func TestConcurrentFormationClaimHasSingleWinner(t *testing.T) {
 	}
 }
 
-// 一轮只有一条助手回复，而且先成功的那次就是这一轮的稳定结果：
-// 之后的重复完成不会把它改掉。
+// 一轮只有一条助手回复，先成功的即稳定结果，重复完成不会改掉它。
 func TestCompleteChatTurnKeepsFirstSuccessfulReply(t *testing.T) {
 	svc, _, db := newTestService(t)
 	ctx := context.Background()
@@ -1137,10 +1156,7 @@ func TestHistoryContainsFinishedTurns(t *testing.T) {
 	}
 }
 
-// 一个字都没流出去的失败轮次不进历史。
-//
-// 界面上留一条永远等不到回复的消息，只是在提醒用户「你失败了」；
-// 他要的是重发，不是一条墓碑。
+// 一个字都没流出去的失败轮次不进历史：留一条永远等不到回复的消息只是墓碑。
 func TestHistoryHidesFailedTurnWithoutOutput(t *testing.T) {
 	svc, fake, _ := newTestService(t)
 	fake.agentReplies = []agentReply{{content: ""}}
@@ -1159,8 +1175,7 @@ func TestHistoryHidesFailedTurnWithoutOutput(t *testing.T) {
 	}
 }
 
-// 流了一半断掉的轮次进历史：原用户消息和那条 partial 回复都在，
-// 并且带回 status 与 client_id——刷新后既看得出断在哪，也能原地重试。
+// 流了一半断掉的轮次进历史，并带回 status 与 client_id，刷新后可原地重试。
 func TestHistoryShowsPartialReplyWithClientID(t *testing.T) {
 	svc, fake, _ := newTestService(t)
 	fake.agentReplies = []agentReply{{content: ""}}
@@ -1194,10 +1209,7 @@ func TestHistoryShowsPartialReplyWithClientID(t *testing.T) {
 	}
 }
 
-// 展示看得见 partial，送进模型的上下文不行。
-//
-// 一条没写完的回复被当成完整回答喂回去，模型会把它当作自己已经说过的话
-// 承接下去，用户看到的前后文就串了。两条查询刻意分开，就是为了这件事。
+// 展示层看得见 partial，送进模型的上下文不行：未写完的回复会被模型当作自己说过的话承接下去。
 func TestModelContextExcludesPartialReply(t *testing.T) {
 	svc, fake, _ := newTestService(t)
 	fake.agentReplies = []agentReply{{content: ""}}
@@ -1235,9 +1247,7 @@ func TestModelContextExcludesPartialReply(t *testing.T) {
 	}
 }
 
-// 无工具调用的一轮，模型一共被调用三次：一次 Formation 写入、一次 Agent 决策、一次流式生成。
-// 这个数字是「重复生成」代价的度量：Agent 决策出的是完整答案，
-// 流式生成又把它重写了一遍。优化方案在报告里说明，本轮不改。
+// 无工具调用的一轮模型被调 3 次：Formation、Agent 决策、流式生成各一次，其中一次是固定浪费。
 func TestModelCallCountForPlainTurn(t *testing.T) {
 	svc, fake, _ := newTestService(t)
 	fake.agentReplies = []agentReply{{content: "决策阶段的完整答案"}}
@@ -1281,9 +1291,12 @@ func TestParseRef(t *testing.T) {
 }
 
 func TestBuildResponseSystemPromptWithoutFormation(t *testing.T) {
-	got := buildResponseSystemPrompt(nil)
-	if got != responseSystemPrompt {
+	got := buildResponseSystemPrompt(nil, "2026-10-09")
+	if !strings.HasPrefix(got, responseSystemPrompt) {
 		t.Fatal("没有 Formation 结果时不应附加任何理解内容")
+	}
+	if !strings.Contains(got, "今天是 2026-10-09") {
+		t.Fatal("系统提示里缺少日期参考")
 	}
 }
 
@@ -1294,9 +1307,9 @@ func TestBuildResponseSystemPromptIncludesGuidance(t *testing.T) {
 			UserMood:        []string{"疲惫"},
 			ResponseContext: []string{"他在做 Memora"},
 		},
-	})
+	}, "2026-10-09")
 
-	for _, want := range []string{"用户在说项目进度", "疲惫", "他在做 Memora"} {
+	for _, want := range []string{"用户在说项目进度", "疲惫", "他在做 Memora", "今天是 2026-10-09"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("系统提示里缺少 %q", want)
 		}
@@ -1308,9 +1321,15 @@ func TestBuildFormationInputLabelsRefs(t *testing.T) {
 		{ID: 41, Role: "user", Content: "上一句"},
 	}, []model.Memory{
 		{ID: 7, Content: "已有记忆", Category: "goal"},
+	}, []model.LifeRecord{
+		{ID: 31, Kind: model.LifeKindActivity, State: model.LifeStateDone,
+			Content: "用户跑步了", OccurredOn: "2026-10-08", DatePrecision: model.LifeDateDay},
+		{ID: 32, Kind: model.LifeKindDate, State: model.LifeStateNone,
+			Content: "用户生日是五月八日", OccurredMonth: 5, OccurredDay: 8,
+			DatePrecision: model.LifeDateMonthDay},
 	})
 
-	for _, want := range []string{"chat:42", "chat:41", "memory:7", "goal"} {
+	for _, want := range []string{"chat:42", "chat:41", "memory:7", "goal", "life:31", "2026-10-08", "life:32", "05-08"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("Formation 输入里缺少 %q:\n%s", want, got)
 		}

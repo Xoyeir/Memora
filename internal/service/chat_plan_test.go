@@ -11,8 +11,7 @@ func candidate(content string) *llm.MemoryCandidate {
 	return &llm.MemoryCandidate{Content: content, Category: "goal"}
 }
 
-// 这个函数是「模型输出未通过校验，被明确拒绝」和「合法操作执行时数据库失败」的分界点：
-// 前者在这里被丢掉，后者发生在事务里、会让整批回滚。
+// 分界点：模型输出被拒绝在这里丢掉；数据库失败发生在事务里、会让整批回滚。
 func TestPlanMemoryOps(t *testing.T) {
 	const userChatID = 42
 	memories := []model.Memory{{ID: 7}, {ID: 8}}
@@ -110,8 +109,7 @@ func TestPlanMemoryOps(t *testing.T) {
 	}
 }
 
-// 一批里有个别 action 不合法时，其余合法的照常保留：
-// 被拒绝的是模型输出，不是整批写入。
+// 个别 action 不合法时其余照常保留：被拒绝的是模型输出，不是整批写入。
 func TestPlanMemoryOpsKeepsValidOnesInOrder(t *testing.T) {
 	actions := []llm.MemoryAction{
 		{Action: "FORM", Candidate: candidate("第一条")},

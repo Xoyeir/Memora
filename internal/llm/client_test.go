@@ -9,10 +9,7 @@ import (
 	"testing"
 )
 
-// sseServer 起一个受控的流式服务，按脚本写 body，写完关连接。
-//
-// abort 为 true 时在中途直接掐断连接，模拟「对端进程没了」，
-// 而不是让假模型返回一个错误——那是另一条代码路径。
+// sseServer 起一个受控流式服务：按脚本写 body 后关连接，abort 时中途掐断模拟对端进程消失。
 func sseServer(t *testing.T, body string, abort bool) *Client {
 	t.Helper()
 
@@ -36,9 +33,7 @@ func chunk(content string) string {
 	return fmt.Sprintf("data: {\"choices\":[{\"delta\":{\"content\":%q}}]}\n\n", content)
 }
 
-// 只有收到 [DONE] 才算一次完整生成。
-// 对端在输出一半后干净地关掉连接时，scanner 不会报错，
-// 唯一能区分「正常结束」和「提前断流」的就是这个标志。
+// 只有收到 [DONE] 才算完整生成，对端输出一半后干净断流时 scanner 不报错。
 func TestStreamMessagesTreatsMissingDoneAsFailure(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -91,7 +86,6 @@ func TestStreamMessagesTreatsMissingDoneAsFailure(t *testing.T) {
 			if text != tc.wantText {
 				t.Fatalf("返回的内容是 %q，期望 %q", text, tc.wantText)
 			}
-			// 已经流给用户的内容必须一并带回，否则「断流」会被误当成「整轮没有发生」。
 			if got.String() != tc.wantText {
 				t.Fatalf("增量累计是 %q，期望 %q", got.String(), tc.wantText)
 			}

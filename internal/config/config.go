@@ -8,10 +8,8 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// defaultTimezone 是 APP_TIMEZONE 未配置时的缺省时区。
 const defaultTimezone = "Asia/Shanghai"
 
-// Config 保存应用运行所需的全部配置，全部来自环境变量。
 type Config struct {
 	ServerPort string
 	DBHost     string
@@ -22,22 +20,11 @@ type Config struct {
 	LLMBaseURL string
 	LLMAPIKey  string
 	LLMModel   string
-	// Timezone 只负责一件事：把一个真实时刻换算成业务意义上的自然日。
-	//
-	// 它不参与 datetime 的读或写——那是 repository.StorageTimezone 的事。
-	// 两者分开之后，改这个值只会让「哪一刻算哪一天」变化，
-	// 不会重新解释已经存好的时间。
-	//
-	// 之所以叫 APP_TIMEZONE 而不是 TZ：TZ 是 Go 进程自己会读的环境变量，
-	// 设了它会连带改掉 time.Local，是历史时间被静默偏移的来源。
+	// Timezone 只把真实时刻换算成业务自然日，不参与 datetime 读写（那是 repository.StorageTimezone）。
 	Timezone string
 }
 
-// Load 读取 .env 文件并组装配置。任何必填项缺失都会直接返回 error。
 func Load() (*Config, error) {
-	// 把 .env 文件加载进进程环境变量。
-	// 忽略错误：如果 .env 不存在
-	// 下面的必填项校验会兜底，给出明确报错。
 	_ = godotenv.Load()
 
 	cfg := &Config{

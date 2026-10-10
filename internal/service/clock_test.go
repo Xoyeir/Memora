@@ -104,7 +104,6 @@ func TestLocalDate(t *testing.T) {
 	}
 }
 
-// 归属只看时刻，与传入值的 Location 无关。
 func TestLocalDateIgnoresInputLocation(t *testing.T) {
 	clock, err := NewClock("Asia/Shanghai")
 	if err != nil {
@@ -127,10 +126,7 @@ func TestLocalDateIgnoresInputLocation(t *testing.T) {
 	}
 }
 
-// 缺省时区必须与数据库写入墙上时间用的时区一致。
-//
-// 时间列是 datetime，值由 MySQL 按会话时区写成墙上时间。实测两边都是 +08:00，
-// 如果这里换成一个偏移不同的时区，同一批历史数据会落到别的自然日上。
+// 缺省时区必须与数据库写入墙上时间用的时区一致：不一致会让同一批历史数据落到别的自然日。
 func TestDefaultTimezoneOffsetMatchesWrites(t *testing.T) {
 	clock, err := NewClock("Asia/Shanghai")
 	if err != nil {
@@ -146,10 +142,7 @@ func TestDefaultTimezoneOffsetMatchesWrites(t *testing.T) {
 	}
 }
 
-// 同一条历史记录：真实时刻由存储时区固定，日期随 APP_TIMEZONE 变化。
-//
-// 两个时区覆盖不同类型的边界：上海是纯粹的跨日边界，
-// 纽约那两条正好压在夏令时切换当天的两侧。
+// 真实时刻由存储时区固定、日期随 APP_TIMEZONE 变化；上海覆盖跨日边界，纽约覆盖夏令时切换两侧。
 func TestStoredRecordDateFollowsAppTimezone(t *testing.T) {
 	tests := []struct {
 		name      string

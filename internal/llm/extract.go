@@ -53,7 +53,7 @@ func (c *Client) ExtractJournal(ctx context.Context, content string) (*Extractio
 		return nil, err
 	}
 
-	// 部分模型即使开了 json mode 也可能多包一层代码块标记，这里兜底去掉
+	// 部分模型即使开了 json mode 也可能多包一层代码块标记，这里兜底去掉。
 	text = strings.TrimSpace(text)
 	text = strings.TrimPrefix(text, "```json")
 	text = strings.TrimPrefix(text, "```")

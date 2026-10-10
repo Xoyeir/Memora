@@ -6,31 +6,22 @@ import (
 	"net/url"
 	"time"
 
-	// 仅导入以注册 MySQL 驱动，代码里不直接用它
 	_ "github.com/go-sql-driver/mysql"
 
-	// 内嵌 IANA 时区数据库，避免在缺少 tzdata 的运行环境里 LoadLocation 失败。
+	// 内嵌 IANA 时区数据库
 	_ "time/tzdata"
 
 	"github.com/Xoyeir/Memora/internal/config"
 )
 
-// StorageTimezone 是数据库里 datetime 的时区，也就是这批墙上时间的解释方式。
-//
-// 它描述的是磁盘上已有数据的语义，不是运行时偏好，所以写成常量：
-// 已经存好的上海墙上时间不会因为改配置而变成另一个时刻。
-// 换掉它等于重新解释全部历史数据，只能伴随一次明确的数据迁移。
-//
-// 跟 APP_TIMEZONE 是两件事：那个只负责把真实时刻换算成业务自然日。
+// StorageTimezone 是库里 datetime 的时区语义，改它等于重新解释全部历史时间、须配套数据迁移；APP_TIMEZONE 只把真实时刻换算成业务自然日。
 const StorageTimezone = "Asia/Shanghai"
 
 type Repository struct {
 	db *sql.DB
 }
 
-// storageLocation 返回存储时区。
-//
-// tzdata 已内嵌，加载失败只可能是常量写错了，属于构建期问题。
+// storageLocation 加载失败只可能是常量写错了：tzdata 已内嵌。
 func storageLocation() (*time.Location, error) {
 	loc, err := time.LoadLocation(StorageTimezone)
 	if err != nil {
@@ -68,17 +59,7 @@ func Connect(cfg *config.Config) (*Repository, error) {
 	return &Repository{db: db}, nil
 }
 
-// buildDSN 把配置拼成连接串。
-//
-// loc 固定为存储时区，与 APP_TIMEZONE 和机器 Local 都无关：
-// datetime 存的是墙上时间，用什么时区解读它决定了这批数据指哪个时刻。
-//
-// time_zone 让驱动在每一条新建立的连接上执行 SET time_zone，
-// 所以连接池之后新建的连接同样带着这个会话时区，写入侧不会跑偏；
-// 只在某一条连接上设置是不够的，池子会不断替换掉它。
-//
-// 用固定偏移而不是时区名，是为了不要求服务器预先导入时区表；
-// StorageTimezone 不实行夏令时，偏移恒定，这个替换是安全的。
+// loc 固定为存储时区，与 APP_TIMEZONE、机器 Local 无关；会话时区用固定偏移（不要求服务器预导入时区表），须在每条新连接上设置（池子会不断换连接）。
 func buildDSN(cfg *config.Config, loc *time.Location) (string, error) {
 	offset := storageOffset(loc)
 	_, summer := time.Date(2026, 7, 1, 0, 0, 0, 0, loc).Zone()
@@ -98,10 +79,7 @@ func buildDSN(cfg *config.Config, loc *time.Location) (string, error) {
 		url.QueryEscape(loc.String()), url.QueryEscape(sessionTZ)), nil
 }
 
-// checkSessionTimezone 复核连接实际使用的会话时区与存储语义一致。
-//
-// 会话时区已经由 DSN 的 time_zone 逐连接设置过了，这里确认它真的生效：
-// 服务器不认这个值、或中间层改写了它，写入的墙上时间就会和读取的解释对不上。
+// checkSessionTimezone 确认会话时区真的生效：服务器不认或中间层改写它，写入的墙上时间就会和读取时的解释对不上。
 func checkSessionTimezone(db *sql.DB, loc *time.Location) error {
 	var offset int
 	if err := db.QueryRow("SELECT TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW())").Scan(&offset); err != nil {
@@ -122,7 +100,7 @@ func storageOffset(loc *time.Location) int {
 	return offset
 }
 
-// Open 按完整 DSN 建立连接，供测试直接指向测试库使用。
+// Open 供测试用完整 DSN 直连测试库。
 func Open(dsn string) (*Repository, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -137,7 +115,7 @@ func Open(dsn string) (*Repository, error) {
 	return FromDB(db), nil
 }
 
-// FromDB 复用已有的连接池。测试要在同一个池子上同时做仓储调用和原始 SQL 断言。
+// FromDB 复用已有的连接池：测试要在同一个池子上同时做仓储调用和原始 SQL 断言。
 func FromDB(db *sql.DB) *Repository {
 	return &Repository{db: db}
 }

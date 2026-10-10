@@ -33,7 +33,10 @@ func main() {
 
 	journalHandler := handler.NewJournalHandler(svc)
 	chatHandler := handler.NewChatHandler(svc)
-	r := router.Setup(journalHandler, chatHandler)
+	lifeHandler := handler.NewLifeHandler(svc)
+	calendarHandler := handler.NewCalendarHandler(svc)
+	memoryHandler := handler.NewMemoryHandler(svc)
+	r := router.Setup(journalHandler, chatHandler, lifeHandler, calendarHandler, memoryHandler)
 
 	if err := r.Run(":" + cfg.ServerPort); err != nil {
 		log.Fatalf("启动服务失败: %v", err)

@@ -39,8 +39,7 @@ func TestLoadRejectsInvalidTimezone(t *testing.T) {
 	}
 }
 
-// 日期归属必须由 APP_TIMEZONE 控制，而不是进程的 TZ。
-// TZ 会连带改掉 time.Local 和 DSN 里的 loc=Local，那是历史时间被静默偏移的来源。
+// 日期归属由 APP_TIMEZONE 决定，进程 TZ 不得影响它。
 func TestTimezoneIgnoresProcessTZ(t *testing.T) {
 	setRequiredEnv(t)
 	t.Setenv("APP_TIMEZONE", "")
